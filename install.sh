@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="nachat-ayoub/session-setup"
+REPO="nachat-ayoub/42-desk"
 BRANCH="main"
 
 BIN_DIR="$HOME/.local/bin"

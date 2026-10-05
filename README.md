@@ -9,7 +9,7 @@ No sudo required.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nachat-ayoub/session-setup/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/nachat-ayoub/42-desk/main/install.sh | bash
 ```
 
 Then open a new terminal.
