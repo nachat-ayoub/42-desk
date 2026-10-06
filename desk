@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.2.0"
+VERSION="2.2.1"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -1713,16 +1713,44 @@ auto_check() {
 }
 
 
+first_run_once() {
+  # Another shell may have finished setup between the initial check and
+  # acquiring the first-run lock.
+  [ -f "$INITIALIZED" ] &&
+    return 0
+
+  first_run
+}
+
+
 shell_boot() {
   # ---------------------------------------------------------------
   # Fresh machine:
   #
-  # Run setup HERE, visibly, in the user's interactive shell.
+  # Exactly one interactive shell owns the visible first-run setup.
+  # Other shells must never wait for it; they return immediately and
+  # remain usable while setup continues in the owner shell.
   # ---------------------------------------------------------------
 
   if [ ! -f "$INITIALIZED" ]; then
-    first_run
-    return
+    local rc
+
+    if with_lock_try \
+      first-run \
+      first_run_once
+    then
+      return 0
+    else
+      rc=$?
+    fi
+
+    # rc=2 means another shell already owns first-run setup.
+    # Do not wait on that shell or on any of its component locks.
+    if [ "$rc" = 2 ]; then
+      return 0
+    fi
+
+    return "$rc"
   fi
 
   # ---------------------------------------------------------------
