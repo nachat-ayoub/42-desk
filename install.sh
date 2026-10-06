@@ -7,6 +7,8 @@ BRANCH="main"
 BIN_DIR="$HOME/.local/bin"
 DESK="$BIN_DIR/desk"
 
+CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}
+
 URL="https://raw.githubusercontent.com/$REPO/$BRANCH/desk"
 
 
@@ -23,11 +25,12 @@ else
 fi
 
 
-mkdir -p "$BIN_DIR"
+mkdir -p \
+  "$BIN_DIR" \
+  "$CONF_DIR/desk"
 
 
 tmp=$(mktemp)
-
 
 trap \
   'rm -f "$tmp"' \
@@ -35,7 +38,7 @@ trap \
 
 
 printf \
-  '%b›%b installing desk\n' \
+  '%b›%b installing 42-desk\n' \
   "$C" \
   "$R"
 
@@ -46,9 +49,8 @@ curl \
   -o "$tmp"
 
 
-bash \
-  -n \
-  "$tmp"
+# Never install invalid shell code.
+bash -n "$tmp"
 
 
 install \
@@ -57,36 +59,49 @@ install \
   "$DESK"
 
 
+# Install wrappers, desktop entries and shell integration.
 "$DESK" fix
 
 
-mkdir -p \
-  "${XDG_CONFIG_HOME:-$HOME/.config}/desk"
-
-
-nohup \
-  "$DESK" \
-  _shell \
-  >"${XDG_CONFIG_HOME:-$HOME/.config}/desk/install.log" \
-  2>&1 &
-
+printf '\n'
 
 printf \
-  '%b✓%b desk installed\n' \
+  '%b✓%b 42-desk installed\n' \
   "$G" \
   "$R"
 
 
-printf \
-  '  command: %s\n' \
-  "$DESK"
+printf '\n'
+printf 'Your first workstation setup will run visibly in your next terminal.\n\n'
 
 
-printf \
-  '  open a new terminal, or run: %bsource ~/.zshrc%b\n' \
-  "$Y" \
-  "$R"
+case "$(basename "${SHELL:-}")" in
+
+  zsh)
+
+    printf \
+      'Open a new terminal, or run:\n\n  %bsource ~/.zshrc%b\n' \
+      "$Y" \
+      "$R"
+    ;;
 
 
-printf \
-  '  setup continues safely in the background.\n'
+  bash)
+
+    printf \
+      'Open a new terminal, or run:\n\n  %bsource ~/.bashrc%b\n' \
+      "$Y" \
+      "$R"
+    ;;
+
+
+  *)
+
+    printf \
+      'Open a new terminal to start the first setup.\n'
+    ;;
+
+esac
+
+
+printf '\n'

@@ -1,16 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.0.0"
-NAME="desk"
+VERSION="2.2.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
+
+# -------------------------------------------------------------------
+# Flatpak host escape
+# -------------------------------------------------------------------
 
 if [ -f /.flatpak-info ] && [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   if command -v host-spawn >/dev/null 2>&1; then
     exec host-spawn "$SELF" --from-flatpak "${FLATPAK_ID:-}" "$@"
   fi
-  exec flatpak-spawn --host "$SELF" --from-flatpak "${FLATPAK_ID:-}" "$@"
+
+  exec flatpak-spawn \
+    --host \
+    "$SELF" \
+    --from-flatpak "${FLATPAK_ID:-}" \
+    "$@"
 fi
+
+
+# -------------------------------------------------------------------
+# Config
+# -------------------------------------------------------------------
 
 USER=${USER:-$(id -un)}
 
@@ -18,9 +31,12 @@ CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}
 DATA_DIR=${XDG_DATA_HOME:-$HOME/.local/share}
 
 BIN_DIR="$HOME/.local/bin"
+
 STATE_DIR="$CONF_DIR/desk"
+LOCK_DIR="$STATE_DIR/locks"
 
 STAMP="$STATE_DIR/auto-check"
+INITIALIZED="$STATE_DIR/initialized"
 LOG_FILE="$STATE_DIR/last-run.log"
 
 AUTO_CHECK_SECONDS=$((12 * 60 * 60))
@@ -78,9 +94,9 @@ CLOSE_OLD=0
 FAILED=0
 
 
-# --------------------------------------------------------------------
-# UI
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
+# Colors / output
+# -------------------------------------------------------------------
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_RESET='\033[0m'
@@ -105,23 +121,35 @@ fi
 
 info() {
   [ "$QUIET" = 1 ] ||
-    printf '%b›%b %s\n' "$C_CYAN" "$C_RESET" "$*"
+    printf '%b›%b %s\n' \
+      "$C_CYAN" \
+      "$C_RESET" \
+      "$*"
 }
 
 
 ok() {
   [ "$QUIET" = 1 ] ||
-    printf '%b✓%b %s\n' "$C_GREEN" "$C_RESET" "$*"
+    printf '%b✓%b %s\n' \
+      "$C_GREEN" \
+      "$C_RESET" \
+      "$*"
 }
 
 
 warn() {
-  printf '%b!%b %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2
+  printf '%b!%b %s\n' \
+    "$C_YELLOW" \
+    "$C_RESET" \
+    "$*" >&2
 }
 
 
 fail() {
-  printf '%b✗%b %s\n' "$C_RED" "$C_RESET" "$*" >&2
+  printf '%b✗%b %s\n' \
+    "$C_RED" \
+    "$C_RESET" \
+    "$*" >&2
 }
 
 
@@ -139,7 +167,7 @@ pretty() {
 
 json_get() {
   python3 -c '
-import json, sys
+import json,sys
 print(json.load(sys.stdin)[sys.argv[1]])
 ' "$1"
 }
@@ -148,8 +176,8 @@ print(json.load(sys.stdin)[sys.argv[1]])
 label() {
   case "$1" in
     vscode) echo "VS Code" ;;
-    brave)  echo "Brave" ;;
-    *)      echo "$1" ;;
+    brave) echo "Brave" ;;
+    *) echo "$1" ;;
   esac
 }
 
@@ -157,7 +185,7 @@ label() {
 quit_hint() {
   case "$1" in
     vscode) echo "File > Exit" ;;
-    brave)  echo "Ctrl+Shift+Q" ;;
+    brave) echo "Ctrl+Shift+Q" ;;
   esac
 }
 
@@ -171,27 +199,27 @@ usage() {
 
   printf '%bUsage%b\n' "$C_BOLD" "$C_RESET"
 
-  printf '  desk                 ready workstation + open apps\n'
+  printf '  desk                 prepare + open Code and Brave\n'
   printf '  desk c [ARGS]        open VS Code\n'
   printf '  desk b [ARGS]        open Brave\n'
-  printf '  desk p               prepare/update only\n'
+  printf '  desk p               prepare/update everything\n'
   printf '  desk s [c|b]         re-import profile data\n'
-  printf '  desk x               close old apps\n'
-  printf '  desk st              status\n'
+  printf '  desk x               close old Flatpak/Snap apps\n'
+  printf '  desk st              show status\n'
+  printf '  desk clean           reset to fresh-install state\n'
   printf '  desk fix             repair CLI + shell hook\n\n'
 
-  printf '%bDirect commands%b\n' "$C_BOLD" "$C_RESET"
+  printf '%bDirect%b  code .   brave [URL]\n' \
+    "$C_BOLD" "$C_RESET"
 
-  printf '  code .               VS Code anywhere\n'
-  printf '  brave [URL]          Brave anywhere\n\n'
-
-  printf '%bAliases%b  c=code  b=brave  p=prep  s=sync  x=close  st=status\n'
+  printf '%bAliases%b c=code  b=brave  p=prep  s=sync  x=close  st=status\n' \
+    "$C_BOLD" "$C_RESET"
 }
 
 
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
 # Discovery
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
 
 find_goinfre() {
   if [ -n "${GOINFRE:-}" ]; then
@@ -222,11 +250,11 @@ newest() {
 
 
 latest_bin() {
-  [ -d "${1:-}" ] || return 0
-
-  printf '%s\n' "$@" |
-    sort -V |
-    tail -n1
+  [ -d "${1:-}" ] &&
+    printf '%s\n' "$@" |
+      sort -V |
+      tail -n1 ||
+    true
 }
 
 
@@ -234,7 +262,6 @@ app_root() {
   local rest
 
   case "${1:-}" in
-
     "$HOME"/.var/app/*)
       rest=${1#"$HOME"/.var/app/}
       echo "$HOME/.var/app/${rest%%/*}"
@@ -244,7 +271,6 @@ app_root() {
       rest=${1#"$HOME"/snap/}
       echo "$HOME/snap/${rest%%/*}/current"
       ;;
-
   esac
 }
 
@@ -255,10 +281,9 @@ find_vscode_extensions() {
   root=$(app_root "${OLD_VSCODE:-}")
 
   if [ -n "$root" ] &&
-     [ -d "$root/data/vscode/extensions" ]; then
-
+     [ -d "$root/data/vscode/extensions" ]
+  then
     echo "$root/data/vscode/extensions"
-
   else
     echo "$HOME/.vscode/extensions"
   fi
@@ -299,14 +324,12 @@ find_node_bin() {
       echo "$bin"
       return 0
     fi
-
   done
 }
 
 
 setup_runtime() {
   GOINFRE=$(find_goinfre)
-
   APPS="$GOINFRE/apps"
 
   OLD_VSCODE=$(
@@ -323,14 +346,15 @@ setup_runtime() {
 
   VSCODE_EXTENSIONS=$(find_vscode_extensions)
 
-  mkdir -p "$STATE_DIR"
+  mkdir -p \
+    "$STATE_DIR" \
+    "$LOCK_DIR"
 
   if ! mkdir -p "$APPS" 2>/dev/null; then
-
     fail "Can't write to $GOINFRE"
 
     printf \
-      'Set GOINFRE to a directory you own. Example:\n  GOINFRE=/goinfre/%s desk p\n' \
+      'Set GOINFRE to a directory you own, e.g. GOINFRE=/goinfre/%s desk p\n' \
       "$USER" >&2
 
     exit 1
@@ -340,9 +364,9 @@ setup_runtime() {
 }
 
 
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
 # Old Flatpak / Snap processes
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
 
 old_app_pids() {
   local root
@@ -351,7 +375,6 @@ old_app_pids() {
   root=$(app_root "$1")
 
   case "$root" in
-
     "$HOME"/.var/app/*)
 
       command -v flatpak >/dev/null 2>&1 ||
@@ -370,23 +393,24 @@ old_app_pids() {
         return 0
 
       ps -eo pid=,ppid=,args= |
-      awk -v roots="$roots" '
-        BEGIN {
-          n = split(roots, r, " ")
+      awk \
+        -v roots="$roots" \
+        '
+          BEGIN {
+            n = split(roots, r, " ")
 
-          for (i = 1; i <= n; i++)
-            root[r[i]] = 1
-        }
+            for (i = 1; i <= n; i++)
+              root[r[i]] = 1
+          }
 
-        root[$2] &&
-        $3 !~ /(^|\/)(bwrap|cat|gsettings)$/ &&
-        $3 !~ /crashpad_handler/ &&
-        $0 !~ /--type=/ {
-          print $1
-        }
-      '
+          root[$2] &&
+          $3 !~ /(^|\/)(bwrap|cat|gsettings)$/ &&
+          $3 !~ /crashpad_handler/ &&
+          $0 !~ /--type=/ {
+            print $1
+          }
+        '
       ;;
-
 
     "$HOME"/snap/*)
 
@@ -394,7 +418,6 @@ old_app_pids() {
         -f "/snap/$(basename "$(dirname "$root")")/" \
         || true
       ;;
-
   esac
 }
 
@@ -419,7 +442,6 @@ close_old_app() {
   root=$(app_root "$old")
 
   case "$root" in
-
     "$HOME"/.var/app/*)
       id=$(basename "$root")
       ;;
@@ -427,12 +449,11 @@ close_old_app() {
     "$HOME"/snap/*)
       snap=$(basename "$(dirname "$root")")
       ;;
-
   esac
 
   if [ -n "$id" ] &&
-     [ "$id" = "$FROM_FLATPAK" ]; then
-
+     [ "$id" = "$FROM_FLATPAK" ]
+  then
     warn \
       "Run desk from a regular terminal; this Flatpak terminal would close itself."
 
@@ -446,28 +467,21 @@ close_old_app() {
   done
 
   for _ in $(seq 1 15); do
-
     old_app_running "$old" ||
       break
 
     sleep 1
-
   done
 
   if [ -n "$id" ]; then
-
-    flatpak kill "$id" \
-      2>/dev/null ||
-      true
+    flatpak kill "$id" 2>/dev/null || true
 
   elif old_app_running "$old"; then
-
     pkill \
       -KILL \
       -f "/snap/$snap/" \
       2>/dev/null ||
       true
-
   fi
 
   sleep 1
@@ -487,7 +501,8 @@ offer_close_old() {
   if [ "$CLOSE_OLD" != 1 ]; then
 
     if [ "$QUIET" = 1 ] ||
-       [ ! -t 0 ]; then
+       [ ! -t 0 ]
+    then
       return 1
     fi
 
@@ -501,16 +516,129 @@ offer_close_old() {
       ""|[Yy]*) ;;
       *) return 1 ;;
     esac
-
   fi
 
   close_old_app "$name" "$old"
 }
 
 
-# --------------------------------------------------------------------
-# Application installation
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
+# FIRST RUN
+# -------------------------------------------------------------------
+
+first_run_wait_for_old_apps() {
+  local vscode_running=0
+  local brave_running=0
+  local answer
+
+  while true; do
+
+    vscode_running=0
+    brave_running=0
+
+    if [ -n "$OLD_VSCODE" ] &&
+       old_app_running "$OLD_VSCODE"
+    then
+      vscode_running=1
+    fi
+
+    if [ -n "$OLD_BRAVE" ] &&
+       old_app_running "$OLD_BRAVE"
+    then
+      brave_running=1
+    fi
+
+    if [ "$vscode_running" = 0 ] &&
+       [ "$brave_running" = 0 ]
+    then
+      return 0
+    fi
+
+    printf '\n'
+    warn "Before the first setup, close your old apps so their profiles can be copied safely."
+    printf '\n'
+
+    if [ "$vscode_running" = 1 ]; then
+      printf '  %b•%b VS Code — %bFile > Exit%b\n' \
+        "$C_YELLOW" "$C_RESET" \
+        "$C_BOLD" "$C_RESET"
+    fi
+
+    if [ "$brave_running" = 1 ]; then
+      printf '  %b•%b Brave   — %bCtrl+Shift+Q%b\n' \
+        "$C_YELLOW" "$C_RESET" \
+        "$C_BOLD" "$C_RESET"
+    fi
+
+    printf '\n'
+
+    if [ ! -t 0 ]; then
+      warn "Run 'desk p' from an interactive terminal after closing them."
+      return 1
+    fi
+
+    read \
+      -r \
+      -p "Close them, then press Enter to continue (q to cancel): " \
+      answer
+
+    case "$answer" in
+      q|Q)
+        return 1
+        ;;
+    esac
+
+  done
+}
+
+
+first_run() {
+  printf '\n'
+  printf '%b42-desk first setup%b\n' \
+    "$C_BOLD" \
+    "$C_RESET"
+
+  printf '%bPreparing this workstation for you.%b\n\n' \
+    "$C_DIM" \
+    "$C_RESET"
+
+  if ! first_run_wait_for_old_apps; then
+    warn "First setup cancelled."
+    return 1
+  fi
+
+  if prepare_all; then
+
+    touch "$INITIALIZED"
+    touch "$STAMP"
+
+    printf '\n'
+
+    ok "Workstation ready"
+
+    printf '\n'
+    printf '  VS Code: %bcode .%b\n' \
+      "$C_BOLD" \
+      "$C_RESET"
+
+    printf '  Brave:   %bbrave%b\n' \
+      "$C_BOLD" \
+      "$C_RESET"
+
+    printf '\n'
+
+    return 0
+  fi
+
+  warn "Setup finished with warnings. Run 'desk p' to retry."
+
+  return 1
+}
+
+
+# -------------------------------------------------------------------
+# Install applications
+# -------------------------------------------------------------------
 
 ensure_app() {
   local name=$1
@@ -533,47 +661,36 @@ ensure_app() {
   if [ -z "$latest" ]; then
 
     if [ -n "$have" ]; then
-      warn \
-        "$(label "$name"): update server unavailable; keeping $have"
-
+      warn "$(label "$name"): update server unavailable; keeping $have"
       return 0
     fi
 
-    warn \
-      "$(label "$name"): download server unavailable"
-
+    warn "$(label "$name"): download server unavailable"
     return 1
   fi
-
 
   if [ "$have" = "$latest" ]; then
     ok "$(label "$name") $have"
     return 0
   fi
 
-
   if [ -n "$have" ] &&
-     pgrep -f "$dest/" >/dev/null 2>&1; then
-
+     pgrep -f "$dest/" >/dev/null 2>&1
+  then
     warn \
       "$(label "$name") $latest available; close it and run 'desk p'"
 
     return 0
   fi
 
-
-  info \
-    "Installing $(label "$name") $latest"
-
+  info "Downloading $(label "$name") $latest"
 
   tmp=$(
     mktemp \
       -d "$GOINFRE/.desk-download.XXXXXX"
   )
 
-
   if ! {
-
     curl \
       -fL \
       --progress-bar \
@@ -589,7 +706,6 @@ ensure_app() {
     mkdir "$tmp/x" &&
 
     case "$url" in
-
       *.zip)
         unzip \
           -q \
@@ -602,34 +718,41 @@ ensure_app() {
           -xzf "$tmp/archive" \
           -C "$tmp/x"
         ;;
-
     esac
-
   }; then
 
     rm -rf "$tmp"
 
-    warn \
-      "$(label "$name"): download/checksum failed"
+    warn "$(label "$name"): download/checksum failed"
 
     return 1
   fi
-
 
   if [ ! -d "$tmp/x/$subdir" ]; then
 
     rm -rf "$tmp"
 
-    warn \
-      "$(label "$name"): archive layout changed"
+    warn "$(label "$name"): archive layout changed"
 
     return 1
   fi
 
-
   echo "$latest" \
     > "$tmp/x/$subdir/.installed-version"
 
+  # App may have been launched during the download.
+  if pgrep \
+    -f "$dest/" \
+    >/dev/null 2>&1
+  then
+
+    rm -rf "$tmp"
+
+    warn \
+      "$(label "$name") started while updating; update postponed"
+
+    return 0
+  fi
 
   rm -rf "$dest"
 
@@ -656,18 +779,9 @@ install_vscode() {
       "$VSCODE_API"
   ); then
 
-    latest=$(
-      json_get productVersion <<<"$meta"
-    )
-
-    url=$(
-      json_get url <<<"$meta"
-    )
-
-    sha=$(
-      json_get sha256hash <<<"$meta"
-    )
-
+    latest=$(json_get productVersion <<<"$meta")
+    url=$(json_get url <<<"$meta")
+    sha=$(json_get sha256hash <<<"$meta")
   fi
 
   ensure_app \
@@ -690,7 +804,8 @@ install_brave() {
       --max-time 15 \
       "$BRAVE_VERSION_URL"
   ) &&
-     [[ $latest =~ ^[0-9.]+$ ]]; then
+     [[ $latest =~ ^[0-9.]+$ ]]
+  then
 
     url="https://github.com/brave/brave-browser/releases/download/v$latest/brave-browser-$latest-linux-amd64.zip"
 
@@ -706,11 +821,8 @@ install_brave() {
       latest=""
 
   else
-
     latest=""
-
   fi
-
 
   ensure_app \
     brave \
@@ -721,9 +833,9 @@ install_brave() {
 }
 
 
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
 # Profile migration
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
 
 has_real_data() {
   [ -e "$1/Default/Preferences" ] ||
@@ -744,6 +856,51 @@ mark_old_import_as_current() {
 }
 
 
+carry_tool_configs() {
+  local root=$1
+
+  local kind
+  local dest
+  local item
+  local name
+
+  for kind in config data; do
+
+    if [ "$kind" = config ]; then
+      dest=$CONF_DIR
+    else
+      dest=$DATA_DIR
+    fi
+
+    for item in "$root/$kind"/*; do
+
+      [ -e "$item" ] ||
+        continue
+
+      name=$(basename "$item")
+
+      case "$name" in
+        BraveSoftware|Code|vscode|nvm|dconf|glib-2.0|gtk-*|ibus|pulse|fontconfig|user-dirs.*|recently-used.xbel|flatpak*|mimeapps.list|QtProject.conf|kdeglobals)
+          continue
+          ;;
+      esac
+
+      [ -e "$dest/$name" ] &&
+        continue
+
+      mkdir -p "$dest"
+
+      cp \
+        -a \
+        "$item" \
+        "$dest/"
+
+      info "Copied $kind/$name from old sandbox"
+    done
+  done
+}
+
+
 import_data() {
   local name=$1
   local old=$2
@@ -755,15 +912,12 @@ import_data() {
   [ -n "$old" ] ||
     return 0
 
-
   mark_old_import_as_current "$new"
-
 
   if [[ " $REIMPORT " != *" $name "* ]]; then
 
     [ -f "$new/$MARKER" ] &&
       return 0
-
 
     if has_real_data "$new"; then
 
@@ -774,24 +928,21 @@ import_data() {
         "$(date -Is)" \
         > "$new/$MARKER"
 
-      info \
-        "Keeping existing $(label "$name") profile"
+      info "Keeping existing $(label "$name") profile"
 
       return 0
     fi
-
   fi
 
-
   if old_app_running "$old" &&
-     ! offer_close_old "$name" "$old"; then
+     ! offer_close_old "$name" "$old"
+  then
 
     warn \
       "$(label "$name") profile not imported; old app is running ($(quit_hint "$name"))."
 
     return 1
   fi
-
 
   if pgrep \
     -f "$APPS/$name/" \
@@ -803,7 +954,6 @@ import_data() {
 
     return 1
   fi
-
 
   if [ -e "$new" ]; then
 
@@ -817,19 +967,13 @@ import_data() {
 
     info \
       "Backed up $(label "$name") profile"
-
   fi
 
-
-  info \
-    "Importing $(label "$name") profile"
-
+  info "Importing $(label "$name") profile"
 
   mkdir -p "$(dirname "$new")"
 
-
   if ! {
-
     rsync \
       -a \
       "${CACHE_EXCLUDES[@]}" \
@@ -845,7 +989,6 @@ import_data() {
     mv \
       "$new.partial" \
       "$new"
-
   }; then
 
     rm -rf "$new.partial"
@@ -854,76 +997,14 @@ import_data() {
       "$(label "$name") profile import failed"
 
     return 1
-
   fi
-
 
   root=$(app_root "$old")
 
   [ -z "$root" ] ||
     carry_tool_configs "$root"
 
-
-  ok \
-    "$(label "$name") profile ready"
-}
-
-
-carry_tool_configs() {
-  local root=$1
-
-  local kind
-  local dest
-  local item
-  local name
-
-
-  for kind in config data; do
-
-    if [ "$kind" = config ]; then
-      dest=$CONF_DIR
-    else
-      dest=$DATA_DIR
-    fi
-
-
-    for item in "$root/$kind"/*; do
-
-      [ -e "$item" ] ||
-        continue
-
-
-      name=$(basename "$item")
-
-
-      case "$name" in
-
-        BraveSoftware|Code|vscode|nvm|dconf|glib-2.0|gtk-*|ibus|pulse|fontconfig|user-dirs.*|recently-used.xbel|flatpak*|mimeapps.list|QtProject.conf|kdeglobals)
-          continue
-          ;;
-
-      esac
-
-
-      [ -e "$dest/$name" ] &&
-        continue
-
-
-      mkdir -p "$dest"
-
-
-      cp \
-        -a \
-        "$item" \
-        "$dest/"
-
-
-      info \
-        "Copied $kind/$name from old sandbox"
-
-    done
-
-  done
+  ok "$(label "$name") profile ready"
 }
 
 
@@ -954,10 +1035,8 @@ link_vsix_cache() {
     "$GOINFRE/cache/vscode-vsix" \
     "$NEW_VSCODE"
 
-
   [ -L "$NEW_VSCODE/CachedExtensionVSIXs" ] ||
     rm -rf "$NEW_VSCODE/CachedExtensionVSIXs"
-
 
   ln \
     -sfn \
@@ -966,15 +1045,14 @@ link_vsix_cache() {
 }
 
 
-# --------------------------------------------------------------------
-# CLI installation / wrappers / shell
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
+# CLI installation
+# -------------------------------------------------------------------
 
 install_self() {
   local target="$BIN_DIR/desk"
 
   mkdir -p "$BIN_DIR"
-
 
   if [ "$SELF" != "$(readlink -f "$target" 2>/dev/null || true)" ]; then
 
@@ -992,22 +1070,9 @@ install_self() {
 
       ok \
         "Installed $(pretty "$target")"
-
     fi
 
     SELF=$target
-
-  fi
-
-
-  if [ -f "$BIN_DIR/session-setup" ] &&
-     grep \
-       -qs 'session-setup' \
-       "$BIN_DIR/session-setup"
-  then
-
-    rm -f "$BIN_DIR/session-setup"
-
   fi
 }
 
@@ -1015,7 +1080,6 @@ install_self() {
 write_wrapper() {
   local f="$BIN_DIR/$1"
   local app=$2
-
 
   if [ -e "$f" ] &&
      ! grep \
@@ -1029,13 +1093,11 @@ write_wrapper() {
     return 0
   fi
 
-
   printf \
     '#!/bin/sh\nexec "%s" %s "$@"\n' \
     "$BIN_DIR/desk" \
     "$app" \
     > "$f"
-
 
   chmod +x "$f"
 }
@@ -1048,13 +1110,10 @@ remove_block() {
 
   local tmp
 
-
   [ -f "$file" ] ||
     return 0
 
-
   tmp=$(mktemp)
-
 
   awk \
     -v s="$start" \
@@ -1077,7 +1136,6 @@ remove_block() {
     "$file" \
     > "$tmp"
 
-
   mv \
     "$tmp" \
     "$file"
@@ -1088,12 +1146,9 @@ write_shell_hook() {
   local rc
   local shell_name
 
-
   shell_name=$(basename "${SHELL:-zsh}")
 
-
   case "$shell_name" in
-
     zsh)
       rc="$HOME/.zshrc"
       ;;
@@ -1105,18 +1160,14 @@ write_shell_hook() {
     *)
       return 0
       ;;
-
   esac
 
-
   touch "$rc"
-
 
   remove_block \
     "$rc" \
     '# >>> desk >>>' \
     '# <<< desk <<<'
-
 
   sed \
     -i \
@@ -1124,7 +1175,6 @@ write_shell_hook() {
     "$rc" \
     2>/dev/null ||
     true
-
 
   if [ "$shell_name" = zsh ]; then
 
@@ -1136,7 +1186,7 @@ export PATH="$HOME/.local/bin:$PATH"
 unalias code brave 2>/dev/null || true
 unfunction code brave 2>/dev/null || true
 
-{ command desk _shell >/dev/null 2>&1 &! } 2>/dev/null
+command desk _shell
 # <<< desk <<<
 ZSHHOOK
 
@@ -1150,7 +1200,7 @@ export PATH="$HOME/.local/bin:$PATH"
 unalias code brave 2>/dev/null || true
 unset -f code brave 2>/dev/null || true
 
-nohup desk _shell >/dev/null 2>&1 &
+command desk _shell
 # <<< desk <<<
 BASHHOOK
 
@@ -1164,71 +1214,48 @@ write_launchers() {
 
   local exec_path="$BIN_DIR/desk"
 
-
-  write_wrapper \
-    code \
-    code
-
-
-  write_wrapper \
-    brave \
-    brave
-
+  write_wrapper code code
+  write_wrapper brave brave
 
   icon_vscode=$(app_root "$OLD_VSCODE")
-
   icon_brave=$(app_root "$OLD_BRAVE")
 
-
   if [[ $icon_vscode == "$HOME/.var/app/"* ]]; then
-
     icon_vscode=$(basename "$icon_vscode")
-
   else
-
     icon_vscode="$APPS/vscode/resources/app/resources/linux/code.png"
-
   fi
-
 
   if [[ $icon_brave == "$HOME/.var/app/"* ]]; then
-
     icon_brave=$(basename "$icon_brave")
-
   else
-
     icon_brave="$APPS/brave/product_logo_256.png"
-
   fi
 
-
   mkdir -p "$DATA_DIR/applications"
-
 
   cat > "$DATA_DIR/applications/code-native.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=VS Code (native)
-Comment=VS Code from goinfre
+Name=VS Code
+Comment=VS Code managed by 42-desk
 Exec=$exec_path code %F
 Icon=$icon_vscode
 Categories=Development;IDE;
 StartupWMClass=code
 EOF
 
-
   cat > "$DATA_DIR/applications/brave-native.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Brave (native)
-Comment=Brave from goinfre
+Comment=Brave managed by 42-desk
 Exec=$exec_path brave %U
 Icon=$icon_brave
 Categories=Network;WebBrowser;
 MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
 StartupWMClass=$BRAVE_WM_CLASS
 EOF
-
 
   write_shell_hook
 }
@@ -1238,16 +1265,12 @@ claim_default_browser() {
   local old_id
   local current
 
-
   old_id=$(app_root "$OLD_BRAVE")
-
 
   [[ $old_id == "$HOME/.var/app/"* ]] ||
     return 0
 
-
   old_id="$(basename "$old_id").desktop"
-
 
   current=$(
     xdg-settings \
@@ -1256,10 +1279,8 @@ claim_default_browser() {
       true
   )
 
-
   [ "$current" = "$old_id" ] ||
     return 0
-
 
   xdg-settings \
     set \
@@ -1274,37 +1295,88 @@ claim_default_browser() {
 }
 
 
-repair_cli() {
-  install_self
-  write_launchers
+# -------------------------------------------------------------------
+# Locks
+# -------------------------------------------------------------------
 
-  ok "CLI and shell hook ready"
+with_lock_wait() {
+  local lock=$1
+  shift
+
+  local fd
+  local rc
+
+  exec {fd}>"$LOCK_DIR/$lock"
+
+  flock \
+    -w 600 \
+    "$fd" ||
+  {
+    fail "desk is busy ($lock)"
+    eval "exec ${fd}>&-"
+    return 1
+  }
+
+  if "$@"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  flock -u "$fd" || true
+
+  eval "exec ${fd}>&-"
+
+  return "$rc"
 }
 
 
-# --------------------------------------------------------------------
-# Main workstation actions
-# --------------------------------------------------------------------
+with_lock_try() {
+  local lock=$1
+  shift
 
-prepare() {
-  local failed=0
+  local fd
+  local rc
+
+  exec {fd}>"$LOCK_DIR/$lock"
+
+  flock \
+    -n \
+    "$fd" ||
+  {
+    eval "exec ${fd}>&-"
+    return 2
+  }
+
+  if "$@"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  flock -u "$fd" || true
+
+  eval "exec ${fd}>&-"
+
+  return "$rc"
+}
 
 
-  [ "$GOINFRE" != "$HOME/.local/opt" ] ||
-    warn \
-      "No goinfre found; using $(pretty "$GOINFRE")"
+# -------------------------------------------------------------------
+# Preparation
+# -------------------------------------------------------------------
 
-
+prepare_core() {
   install_self
+  write_launchers
+}
 
+
+prepare_vscode_unlocked() {
+  local failed=0
 
   install_vscode ||
     failed=1
-
-
-  install_brave ||
-    failed=1
-
 
   import_data \
     vscode \
@@ -1312,6 +1384,18 @@ prepare() {
     "$NEW_VSCODE" ||
     failed=1
 
+  vscode_ready &&
+    link_vsix_cache
+
+  return "$failed"
+}
+
+
+prepare_brave_unlocked() {
+  local failed=0
+
+  install_brave ||
+    failed=1
 
   import_data \
     brave \
@@ -1319,17 +1403,40 @@ prepare() {
     "$NEW_BRAVE" ||
     failed=1
 
-
-  vscode_ready &&
-    link_vsix_cache
-
-
-  write_launchers
-
-
   brave_ready &&
     claim_default_browser
 
+  return "$failed"
+}
+
+
+prepare_vscode() {
+  with_lock_wait \
+    code \
+    prepare_vscode_unlocked
+}
+
+
+prepare_brave() {
+  with_lock_wait \
+    brave \
+    prepare_brave_unlocked
+}
+
+
+prepare_all() {
+  local failed=0
+
+  with_lock_wait \
+    core \
+    prepare_core ||
+    failed=1
+
+  prepare_vscode ||
+    failed=1
+
+  prepare_brave ||
+    failed=1
 
   return "$failed"
 }
@@ -1347,14 +1454,144 @@ free_ram() {
 }
 
 
+# -------------------------------------------------------------------
+# App launching
+# -------------------------------------------------------------------
+
+launch_vscode_unlocked() {
+  local node_bin
+  local cmd_pid
+  local rc
+
+  if ! vscode_ready; then
+    prepare_vscode_unlocked ||
+      true
+  fi
+
+  vscode_ready ||
+  {
+    fail "VS Code is not ready. Run 'desk p'."
+    return 1
+  }
+
+  node_bin=$(find_node_bin)
+
+  export PATH="$BIN_DIR${node_bin:+:$node_bin}:$PATH"
+
+  "$APPS/vscode/bin/code" \
+    --extensions-dir "$VSCODE_EXTENSIONS" \
+    "$@" &
+
+  cmd_pid=$!
+
+  for _ in $(seq 1 20); do
+
+    pgrep \
+      -f "$APPS/vscode/" \
+      >/dev/null 2>&1 &&
+      break
+
+    kill \
+      -0 \
+      "$cmd_pid" \
+      2>/dev/null ||
+      break
+
+    sleep 0.05
+  done
+
+  flock -u 9 2>/dev/null || true
+
+  if wait "$cmd_pid"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  return "$rc"
+}
+
+
+launch_brave_unlocked() {
+  local cmd_pid
+  local rc
+
+  if ! brave_ready; then
+    prepare_brave_unlocked ||
+      true
+  fi
+
+  brave_ready ||
+  {
+    fail "Brave is not ready. Run 'desk p'."
+    return 1
+  }
+
+  "$APPS/brave/brave" \
+    --class="$BRAVE_WM_CLASS" \
+    --disk-cache-size="$BRAVE_CACHE_BYTES" \
+    "$@" &
+
+  cmd_pid=$!
+
+  for _ in $(seq 1 20); do
+
+    pgrep \
+      -f "$APPS/brave/" \
+      >/dev/null 2>&1 &&
+      break
+
+    kill \
+      -0 \
+      "$cmd_pid" \
+      2>/dev/null ||
+      break
+
+    sleep 0.05
+  done
+
+  flock -u 9 2>/dev/null || true
+
+  if wait "$cmd_pid"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  return "$rc"
+}
+
+
+open_app() {
+  local name=$1
+  shift
+
+  exec 9>"$LOCK_DIR/$name"
+
+  flock \
+    -w 600 \
+    9 ||
+  {
+    fail "desk is busy ($name)"
+    exit 1
+  }
+
+  case "$name" in
+    code)
+      launch_vscode_unlocked "$@"
+      ;;
+
+    brave)
+      launch_brave_unlocked "$@"
+      ;;
+  esac
+}
+
+
 launch_apps() {
-  local old
-
-
-  if vscode_ready &&
-     ! pgrep \
-       -f "$APPS/vscode/" \
-       >/dev/null 2>&1
+  if ! pgrep \
+    -f "$APPS/vscode/" \
+    >/dev/null 2>&1
   then
 
     info "Opening VS Code"
@@ -1364,14 +1601,11 @@ launch_apps() {
       "$BIN_DIR/desk" \
       code \
       >/dev/null 2>&1
-
   fi
 
-
-  if brave_ready &&
-     ! pgrep \
-       -f "$APPS/brave/" \
-       >/dev/null 2>&1
+  if ! pgrep \
+    -f "$APPS/brave/" \
+    >/dev/null 2>&1
   then
 
     info "Opening Brave"
@@ -1381,116 +1615,20 @@ launch_apps() {
       "$BIN_DIR/desk" \
       brave \
       >/dev/null 2>&1
-
   fi
-
-
-  for old in \
-    "$OLD_VSCODE" \
-    "$OLD_BRAVE"
-  do
-
-    [ -z "$old" ] ||
-    ! old_app_running "$old" ||
-    warn \
-      "Old $(basename "$(app_root "$old")") is still running. Use 'desk x'."
-
-  done
 }
 
 
-open_app() {
-  local name=$1
-
-  shift
-
-
-  if ! "${name}_ready"; then
-
-    notify \
-      "Preparing $(label "$name")..."
-
-
-    exec 9>"$STATE_DIR/lock"
-
-
-    flock \
-      -w 600 \
-      9 ||
-    {
-      fail "desk is busy"
-      exit 1
-    }
-
-
-    if ! "${name}_ready"; then
-
-      QUIET=1
-
-      prepare \
-        >"$LOG_FILE" \
-        2>&1 ||
-        true
-
-      QUIET=0
-
-    fi
-
-
-    "${name}_ready" ||
-    {
-      fail \
-        "$(label "$name") is not ready. Run 'desk p'."
-
-      exit 1
-    }
-
-
-    exec 9>&-
-
-  fi
-
-
-  case "$name" in
-
-    vscode)
-
-      local node_bin
-
-      node_bin=$(find_node_bin)
-
-
-      export PATH="$BIN_DIR${node_bin:+:$node_bin}:$PATH"
-
-
-      exec \
-        "$APPS/vscode/bin/code" \
-        --extensions-dir "$VSCODE_EXTENSIONS" \
-        "$@"
-      ;;
-
-
-    brave)
-
-      exec \
-        "$APPS/brave/brave" \
-        --class="$BRAVE_WM_CLASS" \
-        --disk-cache-size="$BRAVE_CACHE_BYTES" \
-        "$@"
-      ;;
-
-  esac
-}
-
+# -------------------------------------------------------------------
+# AUTO CHECK
+# -------------------------------------------------------------------
 
 stamp_fresh() {
   [ -f "$STAMP" ] ||
     return 1
 
-
   local now
   local then
-
 
   now=$(date +%s)
 
@@ -1502,59 +1640,303 @@ stamp_fresh() {
       echo 0
   )
 
-
   [ $((now - then)) -lt "$AUTO_CHECK_SECONDS" ]
 }
 
 
-shell_boot() {
+shell_prepare_component() {
+  local name=$1
+  local rc
+
+  case "$name" in
+    code)
+
+      if with_lock_try \
+        code \
+        prepare_vscode_unlocked
+      then
+        rc=0
+      else
+        rc=$?
+      fi
+      ;;
+
+    brave)
+
+      if with_lock_try \
+        brave \
+        prepare_brave_unlocked
+      then
+        rc=0
+      else
+        rc=$?
+      fi
+      ;;
+  esac
+
+  # Already being handled elsewhere.
+  [ "$rc" = 2 ] &&
+    return 0
+
+  return "$rc"
+}
+
+
+auto_check() {
   QUIET=1
-
-
-  exec 9>"$STATE_DIR/lock"
-
-
-  flock \
-    -n \
-    9 ||
-    exit 0
-
-
-  if vscode_ready &&
-     brave_ready &&
-     [ -x "$BIN_DIR/code" ] &&
-     [ -x "$BIN_DIR/brave" ] &&
-     stamp_fresh
-  then
-
-    exit 0
-  fi
-
 
   touch "$STAMP"
 
+  with_lock_try \
+    core \
+    prepare_core \
+    >/dev/null 2>&1 ||
+    true
 
-  if ! prepare \
-    >"$LOG_FILE" \
-    2>&1
-  then
+  local failed=0
 
+  shell_prepare_component \
+    code \
+    >>"$LOG_FILE" \
+    2>&1 ||
+    failed=1
+
+  shell_prepare_component \
+    brave \
+    >>"$LOG_FILE" \
+    2>&1 ||
+    failed=1
+
+  [ "$failed" = 0 ] ||
     notify \
       "desk needs attention — run: desk p"
-
-    exit 0
-  fi
-
-
-  notify \
-    "desk is ready"
 }
 
+
+shell_boot() {
+  # ---------------------------------------------------------------
+  # Fresh machine:
+  #
+  # Run setup HERE, visibly, in the user's interactive shell.
+  # ---------------------------------------------------------------
+
+  if [ ! -f "$INITIALIZED" ]; then
+    first_run
+    return
+  fi
+
+  # ---------------------------------------------------------------
+  # Normal shells:
+  #
+  # no setup output, no waiting.
+  # ---------------------------------------------------------------
+
+  if stamp_fresh; then
+    return 0
+  fi
+
+  # Detached update check.
+  if command -v setsid >/dev/null 2>&1; then
+
+    setsid \
+      -f \
+      "$BIN_DIR/desk" \
+      _auto \
+      >/dev/null 2>&1
+
+  else
+
+    nohup \
+      "$BIN_DIR/desk" \
+      _auto \
+      >/dev/null 2>&1 &
+
+  fi
+}
+
+
+# -------------------------------------------------------------------
+# CLEAN
+# -------------------------------------------------------------------
+
+managed_wrapper() {
+  local file=$1
+
+  [ -f "$file" ] &&
+  grep \
+    -Eqs '(desk|session-setup)' \
+    "$file"
+}
+
+
+native_apps_running() {
+  local running=0
+
+  if pgrep \
+    -f "$APPS/vscode/" \
+    >/dev/null 2>&1
+  then
+
+    warn "Native VS Code is running. Close it first."
+    running=1
+  fi
+
+  if pgrep \
+    -f "$APPS/brave/" \
+    >/dev/null 2>&1
+  then
+
+    warn "Native Brave is running. Close it first."
+    running=1
+  fi
+
+  [ "$running" = 0 ]
+}
+
+
+clean_reset_unlocked() {
+  local backup
+  local stamp
+
+  stamp=$(date +%Y%m%d-%H%M%S)
+
+  backup="$GOINFRE/backups/desk-clean-$stamp"
+
+  if [ -e "$NEW_VSCODE" ] ||
+     [ -e "$NEW_BRAVE" ]
+  then
+
+    mkdir -p "$backup"
+
+    if [ -e "$NEW_VSCODE" ]; then
+
+      info "Backing up VS Code profile"
+
+      mv \
+        "$NEW_VSCODE" \
+        "$backup/Code"
+    fi
+
+    if [ -e "$NEW_BRAVE" ]; then
+
+      mkdir -p "$backup/BraveSoftware"
+
+      info "Backing up Brave profile"
+
+      mv \
+        "$NEW_BRAVE" \
+        "$backup/BraveSoftware/Brave-Browser"
+    fi
+  fi
+
+  info "Removing desk-managed applications"
+
+  rm -rf \
+    "$APPS/vscode" \
+    "$APPS/brave" \
+    "$GOINFRE/cache/vscode-vsix"
+
+  if managed_wrapper "$BIN_DIR/code"; then
+    rm -f "$BIN_DIR/code"
+  fi
+
+  if managed_wrapper "$BIN_DIR/brave"; then
+    rm -f "$BIN_DIR/brave"
+  fi
+
+  rm -f \
+    "$DATA_DIR/applications/code-native.desktop" \
+    "$DATA_DIR/applications/brave-native.desktop"
+
+  rm -f \
+    "$INITIALIZED" \
+    "$STAMP" \
+    "$LOG_FILE"
+
+  printf '\n'
+
+  ok "Fresh-install state restored"
+
+  if [ -d "$backup" ]; then
+
+    printf '  profile backup: %s\n' \
+      "$(pretty "$backup")"
+  fi
+
+  printf '\n'
+  printf 'Close this terminal and open a new one.\n'
+  printf 'The first-run setup will start again visibly.\n'
+}
+
+
+clean_reset() {
+  local answer
+
+  printf '%bReset 42-desk?%b\n\n' \
+    "$C_BOLD" \
+    "$C_RESET"
+
+  printf 'This will remove:\n'
+  printf '  • desk-managed VS Code\n'
+  printf '  • desk-managed Brave\n'
+  printf '  • code/brave wrappers\n'
+  printf '  • desktop launchers\n'
+  printf '  • first-run/update state\n\n'
+
+  printf 'Your native profiles will be backed up first.\n'
+  printf 'The desk CLI and shell hook will stay installed.\n\n'
+
+  if [ -t 0 ]; then
+
+    read \
+      -r \
+      -p "Continue? [y/N] " \
+      answer
+
+    case "$answer" in
+      y|Y|yes|YES)
+        ;;
+      *)
+        echo "Cancelled."
+        return 0
+        ;;
+    esac
+
+  else
+
+    fail "Run 'desk clean' from an interactive terminal."
+    return 1
+
+  fi
+
+  if ! native_apps_running; then
+
+    printf '\n'
+    warn "Close the apps above, then run 'desk clean' again."
+
+    return 1
+  fi
+
+  # Keep all three locks while resetting.
+  exec 7>"$LOCK_DIR/core"
+  exec 8>"$LOCK_DIR/code"
+  exec 9>"$LOCK_DIR/brave"
+
+  flock -w 600 7 || return 1
+  flock -w 600 8 || return 1
+  flock -w 600 9 || return 1
+
+  clean_reset_unlocked
+}
+
+
+# -------------------------------------------------------------------
+# Status / repair
+# -------------------------------------------------------------------
 
 show_status() {
   local code_cmd
   local brave_cmd
-
 
   code_cmd=$(
     command -v code \
@@ -1562,13 +1944,11 @@ show_status() {
       true
   )
 
-
   brave_cmd=$(
     command -v brave \
       2>/dev/null ||
       true
   )
-
 
   printf \
     '%bdesk%b %s\n\n' \
@@ -1576,11 +1956,24 @@ show_status() {
     "$C_RESET" \
     "$VERSION"
 
-
   printf \
     '  goinfre  %s\n' \
     "$(pretty "$GOINFRE")"
 
+  if [ -f "$INITIALIZED" ]; then
+
+    printf \
+      '  %b✓%b setup  initialized\n' \
+      "$C_GREEN" \
+      "$C_RESET"
+
+  else
+
+    printf \
+      '  %b•%b setup  fresh\n' \
+      "$C_YELLOW" \
+      "$C_RESET"
+  fi
 
   if vscode_ready; then
 
@@ -1595,9 +1988,7 @@ show_status() {
       '  %b✗%b code   not ready\n' \
       "$C_RED" \
       "$C_RESET"
-
   fi
-
 
   if brave_ready; then
 
@@ -1612,15 +2003,22 @@ show_status() {
       '  %b✗%b brave  not ready\n' \
       "$C_RED" \
       "$C_RESET"
-
   fi
-
 
   printf \
     '\n  code   %s\n  brave  %s\n  log    %s\n' \
     "${code_cmd:-not in PATH}" \
     "${brave_cmd:-not in PATH}" \
     "$(pretty "$LOG_FILE")"
+}
+
+
+repair_cli() {
+  with_lock_wait \
+    core \
+    prepare_core
+
+  ok "CLI and shell hook ready"
 }
 
 
@@ -1631,51 +2029,29 @@ close_old_apps() {
     "$OLD_VSCODE" ||
   FAILED=1
 
-
   [ -z "$OLD_BRAVE" ] ||
   close_old_app \
     brave \
     "$OLD_BRAVE" ||
   FAILED=1
 
-
   [ "$FAILED" = 0 ] &&
     ok "Old apps closed"
-
 
   return "$FAILED"
 }
 
 
-run_locked() {
-  exec 9>"$STATE_DIR/lock"
-
-
-  flock \
-    -w 600 \
-    9 ||
-  {
-    fail "desk is busy"
-    exit 1
-  }
-
-
-  "$@"
-}
-
-
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
 # Main
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
 
 main() {
   local cmd=${1:-run}
 
-
   [ $# -gt 0 ] &&
     shift ||
     true
-
 
   if [ "$cmd" = "--from-flatpak" ]; then
 
@@ -1684,43 +2060,34 @@ main() {
     shift ||
       true
 
-
     cmd=${1:-run}
-
 
     [ $# -gt 0 ] &&
       shift ||
       true
-
   fi
 
-
   case "$cmd" in
-
     -h|--help|help|h)
-
       usage
       exit 0
       ;;
 
-
     -v|--version|version|v)
-
       echo "desk $VERSION"
       exit 0
       ;;
-
   esac
-
 
   setup_runtime
 
-
   case "$cmd" in
-
     run)
 
-      if run_locked prepare; then
+      if prepare_all; then
+
+        touch "$INITIALIZED"
+        touch "$STAMP"
 
         free_ram
         launch_apps
@@ -1729,11 +2096,8 @@ main() {
 
       else
 
-        warn \
-          "Finished with warnings"
-
+        warn "Finished with warnings"
         exit 1
-
       fi
       ;;
 
@@ -1741,7 +2105,7 @@ main() {
     c|code|vscode)
 
       open_app \
-        vscode \
+        code \
         "$@"
       ;;
 
@@ -1756,17 +2120,17 @@ main() {
 
     p|prep|prepare|update|up)
 
-      if run_locked prepare; then
+      if prepare_all; then
+
+        touch "$INITIALIZED"
+        touch "$STAMP"
 
         ok "Ready"
 
       else
 
-        warn \
-          "Finished with warnings"
-
+        warn "Finished with warnings"
         exit 1
-
       fi
       ;;
 
@@ -1774,52 +2138,49 @@ main() {
     s|sync|reimport)
 
       case "${1:-all}" in
-
         c|code|vscode)
+
           REIMPORT="vscode"
+          CLOSE_OLD=1
+
+          prepare_vscode
           ;;
+
 
         b|brave)
+
           REIMPORT="brave"
+          CLOSE_OLD=1
+
+          prepare_brave
           ;;
+
 
         all|"")
+
           REIMPORT="vscode brave"
+          CLOSE_OLD=1
+
+          prepare_vscode
+          prepare_brave
           ;;
 
+
         *)
+
           fail "Use: desk s [c|b]"
           exit 2
           ;;
-
       esac
 
-
-      CLOSE_OLD=1
-
-
-      if run_locked prepare; then
-
-        ok \
-          "Profile synced"
-
-      else
-
-        warn \
-          "Sync finished with warnings"
-
-        exit 1
-
-      fi
+      ok "Profile synced"
       ;;
 
 
     x|close)
 
       CLOSE_OLD=1
-
-      run_locked \
-        close_old_apps
+      close_old_apps
       ;;
 
 
@@ -1829,10 +2190,15 @@ main() {
       ;;
 
 
+    clean|reset)
+
+      clean_reset
+      ;;
+
+
     fix)
 
-      run_locked \
-        repair_cli
+      repair_cli
       ;;
 
 
@@ -1842,10 +2208,15 @@ main() {
       ;;
 
 
+    _auto)
+
+      auto_check
+      ;;
+
+
     *)
 
-      fail \
-        "Unknown command: $cmd"
+      fail "Unknown command: $cmd"
 
       printf \
         "Run 'desk help'.\n" \
@@ -1853,7 +2224,6 @@ main() {
 
       exit 2
       ;;
-
   esac
 }
 

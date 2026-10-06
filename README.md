@@ -1,10 +1,32 @@
-# desk
+# 42-desk
 
-Fast workstation setup for 42 / 1337 Linux machines.
+**Get any 42 / 1337 Linux workstation ready to work in seconds.**
 
-`desk` installs native VS Code and Brave inside `goinfre`, migrates your existing profiles, creates desktop launchers and gives you normal `code` and `brave` terminal commands.
+`42-desk` is a small no-sudo workstation bootstrapper designed for shared
+42 / 1337 Linux machines.
 
-No sudo required.
+It installs native VS Code and Brave inside `goinfre`, migrates your existing
+profiles, creates normal `code` and `brave` commands, and automatically checks
+your workstation when you open a shell.
+
+## Features
+
+- No `sudo`
+- Uses `goinfre`
+- Native VS Code
+- Native Brave
+- VS Code profile migration
+- Brave profile migration
+- VS Code extension support
+- `code .`
+- `brave <url>`
+- Desktop application entries
+- Visible first-run setup
+- Safe per-app locking
+- Background update checks after first setup
+- Old Flatpak / Snap detection
+- Fresh-install reset for testing
+- Minimal CLI
 
 ## Install
 
@@ -14,17 +36,61 @@ curl -fsSL https://raw.githubusercontent.com/nachat-ayoub/42-desk/main/install.s
 
 Then open a new terminal.
 
-Or:
+Or reload your current shell:
 
 ```bash
 source ~/.zshrc
 ```
 
-That's it.
+The installer itself is fast. The actual first workstation setup starts visibly
+inside your first shell session so you can see downloads, profile migration,
+warnings, and progress.
 
-The initial application setup can continue in the background.
+## First setup
 
----
+On the first shell after installation, `42-desk` performs the initial setup
+in the foreground.
+
+Example:
+
+```text
+42-desk first setup
+Preparing this workstation for you.
+
+› Downloading VS Code ...
+✓ VS Code installed
+› Importing VS Code profile
+✓ VS Code profile ready
+
+› Downloading Brave ...
+✓ Brave installed
+› Importing Brave profile
+✓ Brave profile ready
+
+✓ Workstation ready
+
+  VS Code: code .
+  Brave:   brave
+```
+
+If your old VS Code or Brave is still running, `42-desk` stops before copying
+their profiles and asks you to close them first.
+
+Example:
+
+```text
+! Before the first setup, close your old apps so their profiles can be copied safely.
+
+  • VS Code — File > Exit
+  • Brave   — Ctrl+Shift+Q
+
+Close them, then press Enter to continue (q to cancel):
+```
+
+Once the old apps are closed, press Enter and setup continues.
+
+After the first successful setup, future shell sessions stay fast. Periodic
+maintenance and update checks run in the background.
 
 ## Usage
 
@@ -32,21 +98,15 @@ The initial application setup can continue in the background.
 desk
 ```
 
-Prepare the workstation and open VS Code + Brave.
+Prepare everything and open VS Code + Brave.
 
 ### VS Code
-
-```bash
-desk c
-```
-
-or:
 
 ```bash
 desk c .
 ```
 
-You can also use the normal command:
+or directly:
 
 ```bash
 code .
@@ -64,24 +124,23 @@ or:
 desk b https://github.com
 ```
 
-You can also use:
+or directly:
 
 ```bash
 brave https://github.com
 ```
 
----
-
 ## Commands
 
 ```text
-desk                 ready workstation + open apps
+desk                 prepare + open Code and Brave
 desk c [ARGS]        open VS Code
 desk b [ARGS]        open Brave
-desk p               prepare/update only
+desk p               prepare/update everything
 desk s [c|b]         re-import profile data
-desk x               close old apps
+desk x               close old Flatpak/Snap apps
 desk st              show status
+desk clean           reset to fresh-install state
 desk fix             repair CLI + shell hook
 ```
 
@@ -94,13 +153,79 @@ desk prep
 desk sync
 desk close
 desk status
+desk reset
 ```
 
----
+## Fresh workstation behavior
 
-## Automatic shell setup
+You do not need to run the full setup before using an app.
 
-`desk` adds a small managed section to `~/.zshrc`:
+For example:
+
+```bash
+desk c .
+```
+
+on a fresh or partially reset workstation will prepare only VS Code if needed:
+
+```text
+check VS Code
+    ↓
+missing
+    ↓
+install VS Code
+    ↓
+import profile
+    ↓
+configure extensions
+    ↓
+open project
+```
+
+It does not wait for Brave.
+
+Likewise:
+
+```bash
+desk b
+```
+
+only prepares Brave if Brave is missing.
+
+Running:
+
+```bash
+desk
+```
+
+or:
+
+```bash
+desk p
+```
+
+prepares both applications.
+
+## Background behavior
+
+The shell hook runs:
+
+```bash
+command desk _shell
+```
+
+On the first shell, setup runs visibly in the foreground.
+
+After the workstation is initialized:
+
+- normal shell startup stays fast
+- a full update check happens at most once every 12 hours
+- that maintenance check runs in the background
+- if everything is already ready, nothing visible happens
+
+## Shell integration
+
+`42-desk` adds a managed block to your shell configuration:
 
 ```bash
 # >>> desk >>>
@@ -109,36 +234,35 @@ export PATH="$HOME/.local/bin:$PATH"
 unalias code brave 2>/dev/null || true
 unfunction code brave 2>/dev/null || true
 
-{ command desk _shell >/dev/null 2>&1 &! } 2>/dev/null
+command desk _shell
 # <<< desk <<<
 ```
 
-The check runs in the background, so opening a terminal is not blocked.
+For Bash, the equivalent block uses:
 
-If everything is already installed, it exits immediately.
-
-A background update check is performed at most once every 12 hours.
-
-This also prevents old `code` aliases or functions from overriding the VS Code installed by `desk`.
-
----
-
-## What gets installed
-
-The CLI is installed at:
-
-```text
-~/.local/bin/desk
+```bash
+unset -f code brave 2>/dev/null || true
 ```
 
-Terminal launchers:
+This also prevents old `code` or `brave` aliases/functions from overriding the
+commands managed by `42-desk`.
+
+## Safe concurrency
+
+VS Code and Brave use separate lock files:
 
 ```text
-~/.local/bin/code
-~/.local/bin/brave
+~/.config/desk/locks/code
+~/.config/desk/locks/brave
+~/.config/desk/locks/core
 ```
 
-Applications are normally stored in:
+This prevents duplicate downloads or simultaneous profile imports for the same
+application, while still allowing Code and Brave setup to proceed independently.
+
+## Storage
+
+Applications normally live in:
 
 ```text
 /goinfre/$USER/apps/vscode
@@ -151,39 +275,50 @@ If `/goinfre` is unavailable, `desk` falls back to:
 ~/.local/opt
 ```
 
----
+The CLI itself is installed at:
+
+```text
+~/.local/bin/desk
+```
+
+Wrappers:
+
+```text
+~/.local/bin/code
+~/.local/bin/brave
+```
 
 ## Profiles
 
-Existing Flatpak or Snap profiles are detected automatically.
-
-VS Code:
+Native profiles use:
 
 ```text
 ~/.config/Code
 ```
 
-Brave:
+and:
 
 ```text
 ~/.config/BraveSoftware/Brave-Browser
 ```
 
-Profile migration happens once.
+Existing Flatpak or Snap profiles are detected automatically.
 
-To manually re-import:
+Profile migration normally happens only once.
+
+## Re-import profiles
+
+VS Code:
 
 ```bash
 desk s c
 ```
 
-for VS Code, or:
+Brave:
 
 ```bash
 desk s b
 ```
-
-for Brave.
 
 Both:
 
@@ -192,8 +327,6 @@ desk s
 ```
 
 The current native profile is backed up before re-importing.
-
----
 
 ## Status
 
@@ -204,9 +337,10 @@ desk st
 Example:
 
 ```text
-desk 2.0.0
+desk 2.2.0
 
   goinfre  /goinfre/anachat
+  ✓ setup  initialized
   ✓ code   ready
   ✓ brave  ready
 
@@ -215,57 +349,107 @@ desk 2.0.0
   log    ~/.config/desk/last-run.log
 ```
 
----
+## Test a fresh installation
+
+Use:
+
+```bash
+desk clean
+```
+
+`desk clean`:
+
+- backs up the current native VS Code profile
+- backs up the current native Brave profile
+- removes desk-managed VS Code
+- removes desk-managed Brave
+- removes the `code` and `brave` wrappers
+- removes desktop launchers
+- removes first-run and update state
+- keeps `desk` itself installed
+- keeps the shell hook installed
+
+After the clean succeeds:
+
+```bash
+exit
+```
+
+Open a new terminal.
+
+The complete first-run setup will start again visibly.
+
+## Profile backups created by clean
+
+`desk clean` stores native profile backups under `goinfre`, for example:
+
+```text
+/goinfre/$USER/backups/desk-clean-20261006-141500/
+```
+
+## Close old apps
+
+```bash
+desk x
+```
+
+During first setup, closing them manually is preferred so profile data is saved
+before migration.
 
 ## Repair
 
-If shell commands or launchers are broken:
+If wrappers or shell integration become broken:
 
 ```bash
 desk fix
 ```
 
-Then reload Zsh:
+Then reload your shell:
 
 ```bash
 source ~/.zshrc
 ```
 
----
-
-## Updating
+## Update applications
 
 ```bash
 desk p
 ```
 
-`desk` also performs a background update check periodically when a new shell is opened.
-
-Running applications are never replaced while they are open.
-
----
+Running applications are not replaced while they are open.
 
 ## Logs
 
-The latest automatic setup log is stored at:
+Background maintenance:
 
 ```text
 ~/.config/desk/last-run.log
 ```
 
-Installation log:
+State:
 
 ```text
-~/.config/desk/install.log
+~/.config/desk/
 ```
 
----
+## Desktop launchers
+
+`42-desk` creates user desktop entries for the native applications.
+
+The Brave entry appears as:
+
+```text
+Brave (native)
+```
+
+This distinguishes it from the old Flatpak/system Brave that may still be
+installed on the workstation.
 
 ## No sudo
 
-`desk` is designed for restricted 42 / 1337 workstations.
+`42-desk` is designed specifically for restricted 42 / 1337 workstations.
 
-It only writes inside locations owned by your user:
+It writes only to user-owned locations such as:
 
 ```text
 $HOME
@@ -274,7 +458,11 @@ $HOME
 
 No root access is required.
 
----
+## Repository
+
+```text
+https://github.com/nachat-ayoub/42-desk
+```
 
 ## License
 
