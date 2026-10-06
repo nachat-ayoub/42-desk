@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.2.1"
+VERSION="2.3.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -40,6 +40,7 @@ INITIALIZED="$STATE_DIR/initialized"
 LOG_FILE="$STATE_DIR/last-run.log"
 
 AUTO_CHECK_SECONDS=$((12 * 60 * 60))
+LOCK_WAIT_SECONDS=60
 
 VSCODE_API="https://update.code.visualstudio.com/api/update/linux-x64/stable/latest"
 BRAVE_VERSION_URL="https://versions.brave.com/latest/release-linux-x64.version"
@@ -772,6 +773,8 @@ install_vscode() {
   local url=""
   local sha=""
 
+  info "Checking VS Code"
+
   if meta=$(
     curl \
       -fsSL \
@@ -797,6 +800,8 @@ install_brave() {
   local latest=""
   local url=""
   local sha=""
+
+  info "Checking Brave"
 
   if latest=$(
     curl \
@@ -1298,24 +1303,93 @@ claim_default_browser() {
 # -------------------------------------------------------------------
 # Locks
 # -------------------------------------------------------------------
+#
+# Do not use flock here. 42/1337 home directories can live on filesystems
+# where flock behaviour is surprising across shells. Atomic mkdir locks work
+# reliably for our use case and also let us detect/recover a dead owner.
+
+lock_dir() {
+  printf '%s/%s.lock' "$LOCK_DIR" "$1"
+}
+
+
+lock_try_acquire() {
+  local name=$1
+  local dir
+  local owner=""
+
+  dir=$(lock_dir "$name")
+
+  if mkdir "$dir" 2>/dev/null; then
+    printf '%s\n' "$$" > "$dir/pid"
+    return 0
+  fi
+
+  # Recover a stale lock left behind by a killed/crashed desk process.
+  if [ -r "$dir/pid" ]; then
+    read -r owner < "$dir/pid" || owner=""
+
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+      rm -rf "$dir"
+
+      if mkdir "$dir" 2>/dev/null; then
+        printf '%s\n' "$$" > "$dir/pid"
+        return 0
+      fi
+    fi
+  fi
+
+  return 2
+}
+
+
+lock_release() {
+  local name=$1
+  local dir
+  local owner=""
+
+  dir=$(lock_dir "$name")
+
+  [ -r "$dir/pid" ] || return 0
+  read -r owner < "$dir/pid" || owner=""
+
+  if [ "$owner" = "$$" ]; then
+    rm -rf "$dir"
+  fi
+}
+
+
+lock_wait_acquire() {
+  local name=$1
+  local deadline
+  local now
+
+  deadline=$(( $(date +%s) + LOCK_WAIT_SECONDS ))
+
+  while true; do
+    if lock_try_acquire "$name"; then
+      return 0
+    fi
+
+    now=$(date +%s)
+
+    if [ "$now" -ge "$deadline" ]; then
+      fail "desk is busy ($name)"
+      return 1
+    fi
+
+    sleep 0.1
+  done
+}
+
 
 with_lock_wait() {
   local lock=$1
   shift
 
-  local fd
   local rc
 
-  exec {fd}>"$LOCK_DIR/$lock"
-
-  flock \
-    -w 600 \
-    "$fd" ||
-  {
-    fail "desk is busy ($lock)"
-    eval "exec ${fd}>&-"
-    return 1
-  }
+  lock_wait_acquire "$lock" || return 1
 
   if "$@"; then
     rc=0
@@ -1323,10 +1397,7 @@ with_lock_wait() {
     rc=$?
   fi
 
-  flock -u "$fd" || true
-
-  eval "exec ${fd}>&-"
-
+  lock_release "$lock"
   return "$rc"
 }
 
@@ -1335,18 +1406,9 @@ with_lock_try() {
   local lock=$1
   shift
 
-  local fd
   local rc
 
-  exec {fd}>"$LOCK_DIR/$lock"
-
-  flock \
-    -n \
-    "$fd" ||
-  {
-    eval "exec ${fd}>&-"
-    return 2
-  }
+  lock_try_acquire "$lock" || return 2
 
   if "$@"; then
     rc=0
@@ -1354,10 +1416,7 @@ with_lock_try() {
     rc=$?
   fi
 
-  flock -u "$fd" || true
-
-  eval "exec ${fd}>&-"
-
+  lock_release "$lock"
   return "$rc"
 }
 
@@ -1461,11 +1520,9 @@ free_ram() {
 launch_vscode_unlocked() {
   local node_bin
   local cmd_pid
-  local rc
 
   if ! vscode_ready; then
-    prepare_vscode_unlocked ||
-      true
+    prepare_vscode_unlocked || true
   fi
 
   vscode_ready ||
@@ -1475,7 +1532,6 @@ launch_vscode_unlocked() {
   }
 
   node_bin=$(find_node_bin)
-
   export PATH="$BIN_DIR${node_bin:+:$node_bin}:$PATH"
 
   "$APPS/vscode/bin/code" \
@@ -1485,40 +1541,22 @@ launch_vscode_unlocked() {
   cmd_pid=$!
 
   for _ in $(seq 1 20); do
-
-    pgrep \
-      -f "$APPS/vscode/" \
-      >/dev/null 2>&1 &&
-      break
-
-    kill \
-      -0 \
-      "$cmd_pid" \
-      2>/dev/null ||
-      break
-
+    pgrep -f "$APPS/vscode/" >/dev/null 2>&1 && break
+    kill -0 "$cmd_pid" 2>/dev/null || break
     sleep 0.05
   done
 
-  flock -u 9 2>/dev/null || true
-
-  if wait "$cmd_pid"; then
-    rc=0
-  else
-    rc=$?
-  fi
-
-  return "$rc"
+  # Do not wait for the GUI lifetime. The per-app lock only protects startup
+  # and preparation; returning here keeps `code .` responsive.
+  return 0
 }
 
 
 launch_brave_unlocked() {
   local cmd_pid
-  local rc
 
   if ! brave_ready; then
-    prepare_brave_unlocked ||
-      true
+    prepare_brave_unlocked || true
   fi
 
   brave_ready ||
@@ -1535,30 +1573,12 @@ launch_brave_unlocked() {
   cmd_pid=$!
 
   for _ in $(seq 1 20); do
-
-    pgrep \
-      -f "$APPS/brave/" \
-      >/dev/null 2>&1 &&
-      break
-
-    kill \
-      -0 \
-      "$cmd_pid" \
-      2>/dev/null ||
-      break
-
+    pgrep -f "$APPS/brave/" >/dev/null 2>&1 && break
+    kill -0 "$cmd_pid" 2>/dev/null || break
     sleep 0.05
   done
 
-  flock -u 9 2>/dev/null || true
-
-  if wait "$cmd_pid"; then
-    rc=0
-  else
-    rc=$?
-  fi
-
-  return "$rc"
+  return 0
 }
 
 
@@ -1566,23 +1586,13 @@ open_app() {
   local name=$1
   shift
 
-  exec 9>"$LOCK_DIR/$name"
-
-  flock \
-    -w 600 \
-    9 ||
-  {
-    fail "desk is busy ($name)"
-    exit 1
-  }
-
   case "$name" in
     code)
-      launch_vscode_unlocked "$@"
+      with_lock_wait code launch_vscode_unlocked "$@"
       ;;
 
     brave)
-      launch_brave_unlocked "$@"
+      with_lock_wait brave launch_brave_unlocked "$@"
       ;;
   esac
 }
@@ -1822,39 +1832,50 @@ native_apps_running() {
 }
 
 
+backup_profile_for_clean() {
+  local name=$1
+  local src=$2
+  local dst=$3
+
+  [ -e "$src" ] || return 0
+
+  info "Backing up $(label "$name") profile"
+  mkdir -p "$dst"
+
+  if ! rsync \
+    -a \
+    "${CACHE_EXCLUDES[@]}" \
+    "$src/" \
+    "$dst/"
+  then
+    warn "Could not back up $(label "$name") profile"
+    return 1
+  fi
+
+  rm -rf "$src"
+  ok "$(label "$name") profile backed up"
+}
+
+
 clean_reset_unlocked() {
   local backup
   local stamp
 
   stamp=$(date +%Y%m%d-%H%M%S)
-
   backup="$GOINFRE/backups/desk-clean-$stamp"
 
-  if [ -e "$NEW_VSCODE" ] ||
-     [ -e "$NEW_BRAVE" ]
-  then
-
+  if [ -e "$NEW_VSCODE" ] || [ -e "$NEW_BRAVE" ]; then
     mkdir -p "$backup"
 
-    if [ -e "$NEW_VSCODE" ]; then
+    backup_profile_for_clean \
+      vscode \
+      "$NEW_VSCODE" \
+      "$backup/Code" || return 1
 
-      info "Backing up VS Code profile"
-
-      mv \
-        "$NEW_VSCODE" \
-        "$backup/Code"
-    fi
-
-    if [ -e "$NEW_BRAVE" ]; then
-
-      mkdir -p "$backup/BraveSoftware"
-
-      info "Backing up Brave profile"
-
-      mv \
-        "$NEW_BRAVE" \
-        "$backup/BraveSoftware/Brave-Browser"
-    fi
+    backup_profile_for_clean \
+      brave \
+      "$NEW_BRAVE" \
+      "$backup/BraveSoftware/Brave-Browser" || return 1
   fi
 
   info "Removing desk-managed applications"
@@ -1882,13 +1903,10 @@ clean_reset_unlocked() {
     "$LOG_FILE"
 
   printf '\n'
-
   ok "Fresh-install state restored"
 
   if [ -d "$backup" ]; then
-
-    printf '  profile backup: %s\n' \
-      "$(pretty "$backup")"
+    printf '  profile backup: %s\n' "$(pretty "$backup")"
   fi
 
   printf '\n'
@@ -1897,8 +1915,20 @@ clean_reset_unlocked() {
 }
 
 
+clean_busy() {
+  printf '\n' >&2
+  warn "Another desk setup/update is still running."
+  printf 'Wait for it to finish (or stop that desk process), then run: desk clean\n' >&2
+}
+
+
 clean_reset() {
   local answer
+  local rc=0
+  local held_first=0
+  local held_core=0
+  local held_code=0
+  local held_brave=0
 
   printf '%bReset 42-desk?%b\n\n' \
     "$C_BOLD" \
@@ -1915,46 +1945,79 @@ clean_reset() {
   printf 'The desk CLI and shell hook will stay installed.\n\n'
 
   if [ -t 0 ]; then
-
-    read \
-      -r \
-      -p "Continue? [y/N] " \
-      answer
+    read -r -p "Continue? [y/N] " answer
 
     case "$answer" in
-      y|Y|yes|YES)
-        ;;
+      y|Y|yes|YES) ;;
       *)
         echo "Cancelled."
         return 0
         ;;
     esac
-
   else
-
     fail "Run 'desk clean' from an interactive terminal."
     return 1
-
   fi
 
   if ! native_apps_running; then
-
     printf '\n'
     warn "Close the apps above, then run 'desk clean' again."
-
     return 1
   fi
 
-  # Keep all three locks while resetting.
-  exec 7>"$LOCK_DIR/core"
-  exec 8>"$LOCK_DIR/code"
-  exec 9>"$LOCK_DIR/brave"
+  # Reset must never sit on a 10-minute flock wait. Acquire every desk lock
+  # non-blockingly. first-run is included so clean cannot race a setup between
+  # its code and brave phases.
+  if lock_try_acquire first-run; then
+    held_first=1
+  else
+    clean_busy
+    return 1
+  fi
 
-  flock -w 600 7 || return 1
-  flock -w 600 8 || return 1
-  flock -w 600 9 || return 1
+  if lock_try_acquire core; then
+    held_core=1
+  else
+    rc=1
+  fi
 
-  clean_reset_unlocked
+  if [ "$rc" = 0 ]; then
+    if lock_try_acquire code; then
+      held_code=1
+    else
+      rc=1
+    fi
+  fi
+
+  if [ "$rc" = 0 ]; then
+    if lock_try_acquire brave; then
+      held_brave=1
+    else
+      rc=1
+    fi
+  fi
+
+  if [ "$rc" != 0 ]; then
+    [ "$held_brave" = 0 ] || lock_release brave
+    [ "$held_code" = 0 ] || lock_release code
+    [ "$held_core" = 0 ] || lock_release core
+    [ "$held_first" = 0 ] || lock_release first-run
+    clean_busy
+    return 1
+  fi
+
+  if clean_reset_unlocked; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  lock_release brave
+  lock_release code
+  lock_release core
+  lock_release first-run
+
+  return "$rc"
 }
 
 

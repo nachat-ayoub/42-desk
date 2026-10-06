@@ -89,6 +89,13 @@ Close them, then press Enter to continue (q to cancel):
 
 Once the old apps are closed, press Enter and setup continues.
 
+While the first setup is running, any additional terminals open immediately and
+remain usable; they do not wait for the setup terminal to finish.
+
+Slow phases print what they are doing (for example `Checking VS Code`, `Checking Brave`,
+and profile backup/import messages), so the setup does not sit silently during network
+or migration work.
+
 After the first successful setup, future shell sessions stay fast. Periodic
 maintenance and update checks run in the background.
 
@@ -214,7 +221,9 @@ The shell hook runs:
 command desk _shell
 ```
 
-On the first shell, setup runs visibly in the foreground.
+On a fresh workstation, exactly one shell owns the visible first-run setup. If
+you open more terminals while it is still running, their shell hooks skip the
+first-run work immediately instead of waiting on its locks.
 
 After the workstation is initialized:
 
@@ -255,10 +264,13 @@ VS Code and Brave use separate lock files:
 ~/.config/desk/locks/code
 ~/.config/desk/locks/brave
 ~/.config/desk/locks/core
+~/.config/desk/locks/first-run
 ```
 
-This prevents duplicate downloads or simultaneous profile imports for the same
-application, while still allowing Code and Brave setup to proceed independently.
+The `first-run` lock elects one shell to own the visible initial setup without
+blocking any terminals opened afterward. The per-app locks prevent duplicate
+downloads or simultaneous profile imports for the same application, while still
+allowing Code and Brave setup to proceed independently.
 
 ## Storage
 
@@ -337,7 +349,7 @@ desk st
 Example:
 
 ```text
-desk 2.2.0
+desk 2.3.0
 
   goinfre  /goinfre/anachat
   ✓ setup  initialized
@@ -359,8 +371,10 @@ desk clean
 
 `desk clean`:
 
+- fails immediately with a clear message if another desk setup/update is active
 - backs up the current native VS Code profile
 - backs up the current native Brave profile
+- excludes disposable cache data from those backups so reset stays reasonably fast
 - removes desk-managed VS Code
 - removes desk-managed Brave
 - removes the `code` and `brave` wrappers
