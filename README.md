@@ -318,6 +318,14 @@ Existing Flatpak or Snap profiles are detected automatically.
 
 Profile migration normally happens only once.
 
+When migrating from Flatpak VS Code to the native build, `desk` also checks the
+VS Code integrated-terminal `zsh` profile. If it points to a legacy `host-zsh`
+wrapper, a missing shell path, or a wrapper that invokes `flatpak-spawn`, `desk`
+backs up `settings.json` and rewrites the profile to the native host `zsh` found
+with `command -v zsh`. Deliberate working native `zsh` paths are left unchanged.
+
+Running `desk fix` performs this repair on an existing native VS Code profile too.
+
 ## Re-import profiles
 
 VS Code:
@@ -349,7 +357,7 @@ desk st
 Example:
 
 ```text
-desk 2.3.0
+desk 2.3.1
 
   goinfre  /goinfre/anachat
   ✓ setup  initialized
