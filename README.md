@@ -95,7 +95,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.8.0) and `desk st`.
+the installed command. Verify with `desk --version` (2.8.1) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -727,7 +727,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.8.0
+42-desk 2.8.1
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI

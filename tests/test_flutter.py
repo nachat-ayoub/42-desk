@@ -28,7 +28,8 @@ class FlutterTests(unittest.TestCase):
         for key in ('PUB_CACHE', 'GRADLE_USER_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT',
                     'ANDROID_ADB_SERVER_PORT', 'ADB_SERVER_PORT', 'ADB_SERVER_SOCKET'):
             self.env.pop(key, None)
-        self.repo = 'https://storage.googleapis.com/flutter_infra_release/flutter/'
+        self.repo = 'https://storage.googleapis.com/flutter_infra_release/releases/'
+        self.manifest_url = 'https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json'
         self.write_executable(self.bin / 'curl', '''#!/usr/bin/env python3
 import json, os, pathlib, sys
 root = pathlib.Path(os.environ['DESK_FIXTURE'])
@@ -37,11 +38,20 @@ url = next(arg for arg in args if arg.startswith('https://'))
 with (root / 'requests').open('a') as stream:
     stream.write(url + '\\n')
 if (root / 'offline').exists():
-    sys.exit(22)
+    print('000', end='')
+    sys.exit(7)
+errors = root / 'download-errors.json'
+error = json.loads(errors.read_text()).get(url) if errors.exists() else None
+if error:
+    pathlib.Path(args[args.index('-o') + 1]).write_bytes(b'incomplete download')
+    print(error['status'], end='')
+    sys.exit(error['exit'])
 source = json.loads((root / 'urls.json').read_text()).get(url)
 if source is None:
     sys.exit('Unexpected download: ' + url)
 pathlib.Path(args[args.index('-o') + 1]).write_bytes(pathlib.Path(source).read_bytes())
+if '--write-out' in args:
+    print('200', end='')
 ''')
         self.make_release()
 
@@ -96,12 +106,56 @@ sys.exit(int(os.environ.get('DESK_TEST_EXIT', '0')))
         manifest = self.root / 'flutter-releases.json'
         manifest.write_text(json.dumps(self.manifest))
         (self.root / 'urls.json').write_text(json.dumps({
-            self.repo + 'releases/releases_linux.json': str(manifest),
+            self.manifest_url: str(manifest),
             self.repo + self.manifest['releases'][0]['archive']: str(self.archive),
         }))
 
     def install(self):
         return self.run_desk('install', 'flutter')
+
+    def test_downloads_manifest_and_archive_from_official_release_directory(self):
+        self.install()
+        self.assertEqual((self.root / 'requests').read_text().splitlines(), [
+            'https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json',
+            'https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.40.0-stable.tar.xz',
+        ])
+
+    def test_http_manifest_errors_report_status_and_url_without_network_access_advice(self):
+        for status in (404, 403):
+            with self.subTest(status=status):
+                (self.root / 'download-errors.json').write_text(json.dumps({
+                    self.manifest_url: {'status': status, 'exit': 22},
+                }))
+                result = self.run_desk('install', 'flutter', check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('release manifest download failed', result.stderr)
+                self.assertIn('HTTP ' + str(status), result.stderr)
+                self.assertIn(self.manifest_url, result.stderr)
+                self.assertNotIn('allow access', result.stderr)
+                self.assertFalse(self.sdk.exists())
+                self.assertFalse(list((self.flutter / 'downloads').glob('*.part')))
+
+    def test_transport_failure_reports_curl_exit_and_failed_manifest_url(self):
+        (self.root / 'offline').touch()
+        result = self.run_desk('install', 'flutter', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('curl exit 7', result.stderr)
+        self.assertIn(self.manifest_url, result.stderr)
+        self.assertNotIn('HTTP 000', result.stderr)
+
+    def test_archive_http_error_keeps_previous_sdk_and_cleans_partial_download(self):
+        self.install()
+        self.make_release('3.41.0')
+        archive_url = self.repo + self.manifest['releases'][0]['archive']
+        (self.root / 'download-errors.json').write_text(json.dumps({
+            archive_url: {'status': 404, 'exit': 22},
+        }))
+        result = self.run_desk('update', 'flutter', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('HTTP 404', result.stderr)
+        self.assertIn(archive_url, result.stderr)
+        self.assertEqual((self.flutter / '.installed-version').read_text(), '3.40.0\n')
+        self.assertFalse(list((self.flutter / 'downloads').glob('*.part')))
 
     def test_install_publishes_verified_sdk_and_both_commands_without_launching(self):
         self.install()
@@ -236,6 +290,8 @@ sys.exit(int(os.environ.get('DESK_TEST_EXIT', '0')))
         (self.root / 'offline').touch()
         result = self.run_desk('update', 'flutter')
         self.assertIn('release server unavailable', result.stderr)
+        self.assertIn('curl exit 7', result.stderr)
+        self.assertIn(self.manifest_url, result.stderr)
         self.assertEqual((self.flutter / '.installed-version').read_text(), '3.40.0\n')
 
     def test_update_does_not_downgrade_a_newer_managed_sdk(self):

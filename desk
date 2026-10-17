@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.8.0"
+VERSION="2.8.1"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -2412,8 +2412,9 @@ from urllib.parse import urljoin, urlparse
 
 base, arch, update = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3] == '1'
 sdk = base / 'sdk'
-repo = 'https://storage.googleapis.com/flutter_infra_release/flutter/'
-manifest_url = repo + 'releases/releases_linux.json'
+# Match Flutter's SDK archive page (flutter_release_model.dart in flutter/website).
+repo = 'https://storage.googleapis.com/flutter_infra_release/releases/'
+manifest_url = repo + 'releases_linux.json'
 marker = base / '.desk-release.json'
 
 
@@ -2422,11 +2423,23 @@ def ready(root):
         'bin/flutter', 'bin/dart', 'bin/cache/dart-sdk/bin/dart'))
 
 
+class DownloadError(RuntimeError):
+    pass
+
+
 def fetch(url, destination):
     part = destination.with_name(destination.name + '.part')
     try:
-        subprocess.run(['curl', '-fL', '--retry', '2', '--connect-timeout', '15',
-                        '--speed-limit', '1024', '--speed-time', '60', url, '-o', str(part)], check=True)
+        result = subprocess.run(['curl', '-fL', '--retry', '2', '--connect-timeout', '15',
+                                 '--speed-limit', '1024', '--speed-time', '60',
+                                 '--write-out', '%{http_code}', url, '-o', str(part)],
+                                stdout=subprocess.PIPE, text=True)
+        if result.returncode:
+            status = result.stdout.strip()
+            detail = 'curl exit ' + str(result.returncode)
+            if re.fullmatch(r'[1-5][0-9]{2}', status):
+                detail += '; HTTP ' + status
+            raise DownloadError('download failed (' + detail + '): ' + url)
         part.replace(destination)
     finally:
         part.unlink(missing_ok=True)
@@ -2455,11 +2468,11 @@ def main():
     manifest = base / 'downloads/releases_linux.json'
     try:
         fetch(manifest_url, manifest)
-    except subprocess.CalledProcessError:
+    except DownloadError as error:
         if ready(sdk):
-            print('Flutter release server unavailable; keeping the installed SDK.', file=sys.stderr)
+            print('Flutter release server unavailable; keeping the installed SDK. ' + str(error), file=sys.stderr)
             return
-        raise RuntimeError('cannot reach storage.googleapis.com; allow access and retry desk install flutter')
+        raise RuntimeError('release manifest ' + str(error)) from error
     data = json.loads(manifest.read_text())
     if data.get('base_url', '').rstrip('/') != repo.rstrip('/'):
         raise RuntimeError('unexpected Flutter archive base URL')
