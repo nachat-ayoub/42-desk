@@ -96,7 +96,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.9.0) and `desk st`.
+the installed command. Verify with `desk --version` (2.9.1) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -405,6 +405,26 @@ Reload your shell configuration or open a new terminal after setup so IDEs inher
 the managed SDK, JDK, browser, and Ninja bindings. Existing explicit bindings are
 preserved. Then run `desk flutter doctor -v`.
 
+**Project scripts and IDEs:** a child command such as `desk flutter-setup` cannot
+export variables back into your current terminal. A custom build script that
+looks only in `~/Android/Sdk` may miss desk's SDK. In Bash scripts, load the
+managed environment before discovering the SDK or launching build tools:
+
+```bash
+desk_env=$(desk env flutter) || exit 1
+eval "$desk_env"
+```
+
+`desk env flutter` prints quoted exports for the detected SDK, Java, caches,
+temporary directories, Flutter, and ADB port 5038. It does not install or update
+programs, and respects explicit external SDK/cache bindings. If only one of
+`ANDROID_HOME` and `ANDROID_SDK_ROOT` is provided, desk supplies the other.
+VS Code launched through desk also inherits Flutter build settings when Flutter
+is installed, while retaining its usual editor profile and temporary directory.
+Quit all existing VS Code windows before relaunching with `code .` so the new
+extension host inherits these settings. Use `desk fix` to refresh the shell hook;
+reload your shell configuration or open a new terminal for the current shell.
+
 Updates postpone replacement while Flutter/Dart tools or IDE analysis servers
 are active. Local SDK source changes or unrecognized Git revisions are preserved
 and block replacement. `desk clean` removes the managed SDK and Flutter/Dart
@@ -520,6 +540,7 @@ desk claude [ARGS]   run Claude Code in this terminal
 desk android [ARGS]  open the managed Android emulator
 desk flutter [ARGS]  run Flutter (includes Dart)
 desk flutter-setup [TARGETS] prepare Android/web/Linux build tools
+desk env flutter     print shell exports for project scripts
 desk install [APPS]  choose, save, and prepare programs
 desk p               prepare/update selected programs
 desk s [c|b]         re-import profile data
@@ -771,7 +792,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.9.0
+42-desk 2.9.1
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI

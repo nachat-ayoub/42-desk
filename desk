@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.9.0"
+VERSION="2.9.1"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -222,6 +222,7 @@ usage() {
   printf '  desk android [ARGS] open Android 11 Google Play (Pixel 9 display)\n'
   printf '  desk flutter [ARGS] run Flutter (includes Dart)\n'
   printf '  desk flutter-setup [TARGETS] prepare Android/web/Linux build tools\n'
+  printf '  desk env flutter     print shell exports for project scripts\n'
   printf '  desk p               prepare/update selected programs\n'
   printf '  desk s [c|b]         re-import profile data\n'
   printf '  desk x               close old Flatpak/Snap apps\n'
@@ -1735,9 +1736,15 @@ write_shell_hook() {
       if [ -x "$APPS/flutter/tools/jdk/bin/java" ]; then
         printf 'if [ -z "${JAVA_HOME:-}" ]; then export JAVA_HOME=%q; fi\n' "$APPS/flutter/tools/jdk"
       fi
-      if [ -x "$APPS/android/sdk/cmdline-tools/latest/bin/sdkmanager" ]; then
+      if [ -x "$APPS/android/sdk/platform-tools/adb" ] || [ -x "$APPS/android/sdk/cmdline-tools/latest/bin/sdkmanager" ]; then
         printf 'if [ -z "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" ]; then\n'
         printf '  export ANDROID_HOME=%q ANDROID_SDK_ROOT=%q\n' "$APPS/android/sdk" "$APPS/android/sdk"
+        printf 'fi\n'
+      fi
+      printf 'if [ -z "${ANDROID_HOME:-}" ] && [ -n "${ANDROID_SDK_ROOT:-}" ]; then export ANDROID_HOME="$ANDROID_SDK_ROOT"; fi\n'
+      printf 'if [ -z "${ANDROID_SDK_ROOT:-}" ] && [ -n "${ANDROID_HOME:-}" ]; then export ANDROID_SDK_ROOT="$ANDROID_HOME"; fi\n'
+      if [ -x "$APPS/android/sdk/platform-tools/adb" ] || [ -x "$APPS/android/sdk/cmdline-tools/latest/bin/sdkmanager" ]; then
+        printf 'if [ "${ANDROID_HOME:-}" = %q ]; then\n' "$APPS/android/sdk"
         printf '  export ANDROID_USER_HOME=%q ANDROID_AVD_HOME=%q\n' "$APPS/android/state/.android" "$APPS/android/avd"
         printf '  export ANDROID_ADB_SERVER_PORT="${ANDROID_ADB_SERVER_PORT:-5038}" ADB_SERVER_PORT="${ADB_SERVER_PORT:-5038}"\n'
         printf '  export ADB_SERVER_SOCKET="${ADB_SERVER_SOCKET:-tcp:localhost:5038}"\n'
@@ -2350,19 +2357,19 @@ run_android() (
 # Flutter stable SDK (Dart included; SDK and default caches in goinfre)
 # -------------------------------------------------------------------
 
-flutter_environment() {
+# Build settings are also needed by IDE extension hosts. Keep VS Code's own
+# XDG profile and temporary directories separate from Flutter's CLI runtime.
+flutter_build_environment() {
   FLUTTER_BASE="$APPS/flutter"
   export FLUTTER_ROOT="$FLUTTER_BASE/sdk"
   export PUB_CACHE="${PUB_CACHE:-$FLUTTER_BASE/cache/pub}"
   export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$FLUTTER_BASE/cache/gradle}"
-  export XDG_CACHE_HOME="$FLUTTER_BASE/cache/xdg" XDG_CONFIG_HOME="$FLUTTER_BASE/config"
-  export XDG_DATA_HOME="$FLUTTER_BASE/data" XDG_STATE_HOME="$FLUTTER_BASE/state"
-  export TMPDIR="$FLUTTER_BASE/tmp" TMP="$FLUTTER_BASE/tmp" TEMP="$FLUTTER_BASE/tmp"
-  export FLUTTER_SUPPRESS_ANALYTICS="${FLUTTER_SUPPRESS_ANALYTICS:-true}"
   export PATH="$FLUTTER_ROOT/bin:$PATH"
-  umask 077
-  mkdir -p "$PUB_CACHE" "$GRADLE_USER_HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" \
-    "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$TMPDIR" "$FLUTTER_BASE/downloads" || return 1
+  mkdir -p "$PUB_CACHE" "$GRADLE_USER_HOME" || return 1
+  # Some Android build tools require ANDROID_HOME even when Flutter itself
+  # accepts ANDROID_SDK_ROOT. Complete a single binding, preserving conflicts.
+  if [ -z "${ANDROID_HOME:-}" ] && [ -n "${ANDROID_SDK_ROOT:-}" ]; then export ANDROID_HOME="$ANDROID_SDK_ROOT"; fi
+  if [ -z "${ANDROID_SDK_ROOT:-}" ] && [ -n "${ANDROID_HOME:-}" ]; then export ANDROID_SDK_ROOT="$ANDROID_HOME"; fi
   # Reuse the managed Android SDK only when no external SDK was specified.
   # Its private ADB server is on 5038, not the usual 5037.
   if [ -z "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" ] && { [ -x "$APPS/android/sdk/platform-tools/adb" ] || [ -x "$APPS/android/sdk/cmdline-tools/latest/bin/sdkmanager" ]; }; then
@@ -2394,6 +2401,34 @@ flutter_environment() {
     fi
   fi
 }
+
+
+flutter_environment() {
+  umask 077
+  flutter_build_environment || return 1
+  export XDG_CACHE_HOME="$FLUTTER_BASE/cache/xdg" XDG_CONFIG_HOME="$FLUTTER_BASE/config"
+  export XDG_DATA_HOME="$FLUTTER_BASE/data" XDG_STATE_HOME="$FLUTTER_BASE/state"
+  export TMPDIR="$FLUTTER_BASE/tmp" TMP="$FLUTTER_BASE/tmp" TEMP="$FLUTTER_BASE/tmp"
+  export FLUTTER_SUPPRESS_ANALYTICS="${FLUTTER_SUPPRESS_ANALYTICS:-true}"
+  mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" \
+    "$XDG_STATE_HOME" "$TMPDIR" "$FLUTTER_BASE/downloads"
+}
+
+
+print_flutter_environment() (
+  flutter_ready || { fail 'Install Flutter first with desk install flutter.'; return 1; }
+  flutter_environment || return 1
+  local name
+  # Only fixed environment names; quote each value as shell data, including
+  # goinfre paths containing spaces or characters meaningful to the shell.
+  for name in GOINFRE FLUTTER_ROOT PUB_CACHE GRADLE_USER_HOME PATH JAVA_HOME \
+    ANDROID_HOME ANDROID_SDK_ROOT ANDROID_USER_HOME ANDROID_EMULATOR_HOME \
+    ANDROID_SDK_HOME ANDROID_AVD_HOME ANDROID_ADB_SERVER_PORT ADB_SERVER_PORT \
+    ADB_SERVER_SOCKET CHROME_EXECUTABLE XDG_CACHE_HOME XDG_CONFIG_HOME \
+    XDG_DATA_HOME XDG_STATE_HOME TMPDIR TMP TEMP FLUTTER_SUPPRESS_ANALYTICS; do
+    if [ "${!name+x}" = x ]; then printf 'export %s=%q\n' "$name" "${!name}"; fi
+  done
+)
 
 
 flutter_ready() {
@@ -3173,6 +3208,9 @@ launch_vscode_unlocked() {
     return 1
   }
 
+  if flutter_ready; then
+    flutter_build_environment || return 1
+  fi
   node_bin=$(find_node_bin)
   export PATH="$BIN_DIR${node_bin:+:$node_bin}:$PATH"
 
@@ -4039,6 +4077,11 @@ main() {
   setup_runtime || return $?
 
   case "$cmd" in
+    env)
+      if [ "$#" != 1 ] || [ "$1" != flutter ]; then fail 'Use: desk env flutter'; return 2; fi
+      print_flutter_environment
+      ;;
+
     run|open)
       open_programs "$@"
       ;;

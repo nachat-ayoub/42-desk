@@ -5,7 +5,9 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tarfile
+import time
 import unittest
 import zipfile
 
@@ -186,6 +188,80 @@ if '--install' in args and not (root / 'licences-pending').exists():
         self.assertIn('external Android SDK', result.stderr)
         self.assertFalse((self.root / 'external-sdk').exists())
         self.assertFalse((self.android / 'sdk').exists())
+
+    def test_external_sdk_root_also_supplies_android_home_for_builds(self):
+        external = self.root / 'external sdk'
+        self.env['ANDROID_SDK_ROOT'] = str(external)
+        self.run_desk('flutter', 'run')
+        env = json.loads((self.root / 'flutter-launch.json').read_text())['environment']
+        self.assertEqual(env['ANDROID_HOME'], str(external))
+        self.assertEqual(env['ANDROID_SDK_ROOT'], str(external))
+
+    def test_vscode_inherits_flutter_sdk_and_caches_without_changing_its_profile(self):
+        self.write_executable(self.android / 'sdk/platform-tools/adb', '#!/bin/sh\nexit 0\n')
+        self.write_executable(self.storage / 'apps/vscode/bin/code', '''#!/usr/bin/env python3
+import json, os, pathlib, sys
+record = {'args': sys.argv[1:], 'env': {name: os.environ.get(name) for name in (
+    'ANDROID_HOME', 'ANDROID_SDK_ROOT', 'ADB_SERVER_SOCKET', 'FLUTTER_ROOT',
+    'PUB_CACHE', 'GRADLE_USER_HOME', 'XDG_CONFIG_HOME', 'TMPDIR')}}
+(pathlib.Path(os.environ['DESK_FIXTURE']) / 'vscode-launch.json').write_text(json.dumps(record))
+''')
+        self.run_desk('code', 'project with spaces')
+        record = self.root / 'vscode-launch.json'
+        deadline = time.monotonic() + 5
+        while not record.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        launch = json.loads(record.read_text())
+        env = launch['env']
+        self.assertEqual(env['ANDROID_HOME'], str(self.android / 'sdk'))
+        self.assertEqual(env['ANDROID_SDK_ROOT'], str(self.android / 'sdk'))
+        self.assertEqual(env['ADB_SERVER_SOCKET'], 'tcp:localhost:5038')
+        self.assertEqual(env['FLUTTER_ROOT'], str(self.sdk))
+        self.assertEqual(env['PUB_CACHE'], str(self.flutter / 'cache/pub'))
+        self.assertEqual(env['GRADLE_USER_HOME'], str(self.flutter / 'cache/gradle'))
+        self.assertEqual(env['XDG_CONFIG_HOME'], self.env['XDG_CONFIG_HOME'])
+        self.assertEqual(env['TMPDIR'], self.env.get('TMPDIR'))
+        self.assertEqual(launch['args'][-1], 'project with spaces')
+
+    def test_shell_hook_exposes_emulator_sdk_even_without_cmdline_tools(self):
+        self.write_executable(self.android / 'sdk/platform-tools/adb', '#!/bin/sh\nexit 0\n')
+        self.source('setup_runtime; write_shell_hook')
+        result = subprocess.run(['bash', '--noprofile', '--norc', '-c',
+                                 'source "$HOME/.bashrc"; printf "%s\\n" "$ANDROID_HOME" "$ANDROID_SDK_ROOT" "$ADB_SERVER_SOCKET"'],
+                                env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [str(self.android / 'sdk'), str(self.android / 'sdk'),
+                                                     'tcp:localhost:5038'])
+
+    def test_env_command_supplies_sdk_discovery_to_a_project_script(self):
+        self.write_executable(self.android / 'sdk/platform-tools/adb', '#!/bin/sh\nexit 0\n')
+        requests = (self.root / 'requests').read_text()
+        result = subprocess.run(['bash', '-c', '''set -euo pipefail
+desk_env=$("$DESK_SCRIPT" env flutter)
+eval "$desk_env"
+sdk_dir=""
+for candidate in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" "$HOME/Android/Sdk"; do
+  if [[ -n "$candidate" && -x "$candidate/platform-tools/adb" ]]; then sdk_dir="$candidate"; break; fi
+done
+printf '%s\\n' "$sdk_dir" "$ADB_SERVER_SOCKET" "$PUB_CACHE" "$GRADLE_USER_HOME" "$TMPDIR"
+'''], env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [str(self.android / 'sdk'), 'tcp:localhost:5038',
+                                                     str(self.flutter / 'cache/pub'), str(self.flutter / 'cache/gradle'),
+                                                     str(self.flutter / 'tmp')])
+        self.assertEqual((self.root / 'requests').read_text(), requests)
+
+    def test_env_command_quotes_shell_characters_in_external_sdk_paths(self):
+        external = self.root / 'external; $(touch SHELL_INJECTION) sdk'
+        self.env['ANDROID_SDK_ROOT'] = str(external)
+        result = subprocess.run(['bash', '-c', '''set -euo pipefail
+desk_env=$("$DESK_SCRIPT" env flutter)
+eval "$desk_env"
+printf '%s\\n' "$ANDROID_HOME" "$ANDROID_SDK_ROOT"
+'''], cwd=self.root, env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [str(external), str(external)])
+        self.assertFalse((self.root / 'SHELL_INJECTION').exists())
 
     def test_bad_cmdline_archive_is_rejected_without_modifying_the_sdk(self):
         self.cmdline_zip.write_bytes(b'bad')
