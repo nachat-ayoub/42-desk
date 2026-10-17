@@ -25,7 +25,7 @@ class FlutterTests(unittest.TestCase):
         helpers.ProgramTests.setUp(self)
         self.flutter = self.storage / 'apps/flutter'
         self.sdk = self.flutter / 'sdk'
-        for key in ('PUB_CACHE', 'GRADLE_USER_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT',
+        for key in ('PUB_CACHE', 'GRADLE_USER_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT', 'JAVA_HOME', 'CHROME_EXECUTABLE',
                     'ANDROID_ADB_SERVER_PORT', 'ADB_SERVER_PORT', 'ADB_SERVER_SOCKET'):
             self.env.pop(key, None)
         self.repo = 'https://storage.googleapis.com/flutter_infra_release/releases/'
@@ -60,6 +60,9 @@ if '--write-out' in args:
         source.mkdir()
         (source / '.gitignore').write_text('/bin/cache/\n')
         (source / 'README.md').write_text('SDK fixture ' + version)
+        gradle = source / 'packages/flutter_tools/lib/src/android/gradle_utils.dart'
+        gradle.parent.mkdir(parents=True)
+        gradle.write_text('const compileSdkVersionInt = 36;\n')
         script = '''#!/usr/bin/env python3
 import json, os, pathlib, sys
 if sys.argv[1:] == ['--version', '--machine']:
@@ -72,7 +75,8 @@ root = pathlib.Path(os.environ['DESK_FIXTURE'])
     'environment': {key: os.environ.get(key) for key in (
         'FLUTTER_ROOT', 'PUB_CACHE', 'GRADLE_USER_HOME', 'TMPDIR',
         'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT',
-        'ANDROID_USER_HOME', 'ANDROID_AVD_HOME', 'ADB_SERVER_SOCKET', 'ANDROID_ADB_SERVER_PORT')}
+        'ANDROID_USER_HOME', 'ANDROID_AVD_HOME', 'ADB_SERVER_SOCKET', 'ANDROID_ADB_SERVER_PORT',
+        'JAVA_HOME', 'CHROME_EXECUTABLE', 'PATH')}
 }))
 sys.exit(int(os.environ.get('DESK_TEST_EXIT', '0')))
 '''.replace('VERSION', version)

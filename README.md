@@ -20,6 +20,7 @@ Shell startup also checks your saved installation selection for updates.
 - Native Codex CLI and Claude Code (no Node.js/npm required)
 - Android 11 with Google Play Store and a 1080×2424 Pixel 9 display profile
 - Stable Flutter SDK with bundled Dart and Pub/Gradle caches in `goinfre`
+- Optional Flutter build setup for Android, web, and Linux desktop
 - Separate checkbox pickers for installation and launching
 - Explicit updates for installed programs
 - AI CLI caches and temporary files in `goinfre`, plus Codex logs
@@ -95,7 +96,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.8.1) and `desk st`.
+the installed command. Verify with `desk --version` (2.9.0) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -309,6 +310,8 @@ desk flutter create my_app
 desk flutter run -d emulator-5584
 desk update flutter            # Check/install a newer stable SDK
 desk open flutter              # Run flutter doctor in the launch flow
+desk flutter-setup             # Checkbox picker for build targets
+desk flutter-setup all         # Prepare Android, web, and Linux desktop
 ```
 
 Flutter is the sixth selectable program. `desk install all` includes it.
@@ -336,6 +339,8 @@ config/          Flutter/Dart configuration for managed commands
 cache/xdg/       Other runtime caches
 tmp/             Download/extraction and runtime temporary files
 downloads/       Release metadata and in-progress SDK archives
+tools/jdk/       Portable Temurin 21 JDK, when no suitable JDK is available
+tools/ninja/     Portable Ninja for Linux desktop builds, when needed
 ```
 
 Completed SDK archives are removed after installation. Explicit `PUB_CACHE` and
@@ -355,18 +360,56 @@ find the desk-managed emulator after it has booted. Explicit external SDK or ADB
 bindings are preserved. Start the emulator with `desk android`, then check
 `flutter devices`.
 
-The Android entry supplies an emulator, ADB, and an API 30 image. It does not
-supply Android SDK command-line tools, build-tools, all SDK platforms, or a JDK.
-Android app builds need those additional prerequisites and accepted Android SDK
-licences; use `flutter doctor` to diagnose them. The emulator's API 30 image does
-not replace the SDK platform required to compile a Flutter app. Desk does not
-automatically accept licences or install system packages.
+The Android entry supplies an emulator, ADB, and an API 30 image. To compile apps,
+run `desk flutter-setup android` (or `all`). This installs Google's verified
+command-line tools into `$GOINFRE/apps/android/sdk/cmdline-tools/latest`, then
+uses `sdkmanager` to install the SDK platform required by the installed Flutter
+SDK and matching build-tools. It reuses existing ADB and preserves emulator images,
+devices, Google accounts, and project files. The API 30 emulator image is independent
+of the newer SDK platform used to compile an app.
+
+The command-line tools are pinned to the stable Java-based **19.0** release:
+newer Android CLI wrappers have changed the licence workflow Flutter doctor
+expects. Tools 19.0 can still download current SDK packages. An existing **JDK 17+**
+is reused; otherwise desk downloads a SHA-256-verified **Temurin JDK 21** into
+goinfre. An explicitly configured, unsuitable `JAVA_HOME` is reported rather
+than overwritten. Review Android SDK licences at the interactive prompts;
+desk does not answer them for you. Run setup in a terminal. Repeated setup reuses
+the installed packages without requiring another download or licence prompt.
+If an external Android SDK is configured, desk leaves it alone and reports how
+to proceed. Rerun setup after upgrading Flutter if it needs a newer SDK platform.
+
+**Web:** Flutter automatically uses installed Google Chrome or the native managed
+Brave executable when `CHROME_EXECUTABLE` is unset. The direct browser executable
+lets Flutter control its debugging session; the normal detached `desk brave`
+launcher is not used. Explicit browser overrides are preserved. Brave uses
+Flutter's separate temporary debug profile under goinfre; its regular profile
+is retained. `desk flutter-setup web` checks browser availability. If no supported
+browser is installed, select Brave through `desk install` or set
+`CHROME_EXECUTABLE` to a Chromium browser executable.
+
+**Linux desktop:** `desk flutter-setup linux` installs a verified portable Ninja
+binary if needed, and checks Clang, CMake, pkg-config, and GTK 3 development
+libraries. Ninja's path is exposed to managed Flutter commands and the shell hook.
+System libraries and drivers still need administrator access when missing; on
+Ubuntu, desk reports the relevant `apt install` command. A missing `eglinfo`
+(`mesa-utils` on Ubuntu) is an optional graphics diagnostic warning and does not
+prevent compilation. Desk does not run `sudo` or install system packages.
+
+`desk flutter-setup` opens a checkbox picker; without a terminal, its default is
+Android and web. Use explicit targets for automation, such as
+`desk flutter-setup android linux`. This command does not change your saved
+program-installation or launch selections. It attempts all selected targets even
+when one needs attention, and returns failure if a required dependency is missing.
+Reload your shell configuration or open a new terminal after setup so IDEs inherit
+the managed SDK, JDK, browser, and Ninja bindings. Existing explicit bindings are
+preserved. Then run `desk flutter doctor -v`.
 
 Updates postpone replacement while Flutter/Dart tools or IDE analysis servers
 are active. Local SDK source changes or unrecognized Git revisions are preserved
 and block replacement. `desk clean` removes the managed SDK and Flutter/Dart
-wrappers, while keeping its configuration and Pub/Gradle caches. Project folders
-outside the SDK are unaffected.
+wrappers, while keeping its configuration, Pub/Gradle caches, and portable
+JDK/Ninja installations. Project folders outside the SDK are unaffected.
 
 ### Codex CLI
 
@@ -476,6 +519,7 @@ desk ai [ARGS]       run Codex CLI in this terminal
 desk claude [ARGS]   run Claude Code in this terminal
 desk android [ARGS]  open the managed Android emulator
 desk flutter [ARGS]  run Flutter (includes Dart)
+desk flutter-setup [TARGETS] prepare Android/web/Linux build tools
 desk install [APPS]  choose, save, and prepare programs
 desk p               prepare/update selected programs
 desk s [c|b]         re-import profile data
@@ -727,7 +771,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.8.1
+42-desk 2.9.0
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI
@@ -892,6 +936,7 @@ No root access is required.
 CLI regression checks (no desktop session, network, or application download required).
 They cover installation and launch checkboxes, terminal restoration, separate
 saved preferences, installed-only updates, Flutter SDK checksum/revision validation and Android ADB routing,
+Flutter target setup, interactive Android licences, portable JDK/Ninja integrity, and browser selection,
 current/newer version handling,
 installation integrity, cache routing, terminal argument/input/exit handling,
 and Brave launch behavior:

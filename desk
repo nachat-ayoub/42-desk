@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.8.1"
+VERSION="2.9.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -221,6 +221,7 @@ usage() {
   printf '  desk claude [ARGS]   run Claude Code in this terminal\n'
   printf '  desk android [ARGS] open Android 11 Google Play (Pixel 9 display)\n'
   printf '  desk flutter [ARGS] run Flutter (includes Dart)\n'
+  printf '  desk flutter-setup [TARGETS] prepare Android/web/Linux build tools\n'
   printf '  desk p               prepare/update selected programs\n'
   printf '  desk s [c|b]         re-import profile data\n'
   printf '  desk x               close old Flatpak/Snap apps\n'
@@ -360,7 +361,8 @@ import tty
 
 title, action = sys.argv[1:3]
 separator = sys.argv.index("--", 3)
-labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play", "flutter": "Flutter SDK"}
+labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play", "flutter": "Flutter SDK",
+          "android-toolchain": "Android app builds", "web-toolchain": "Web (Brave / Chrome)", "linux-toolchain": "Linux desktop"}
 programs = [(name, labels[name]) for name in sys.argv[3:separator]]
 chosen = set(sys.argv[separator + 1:]).intersection(name for name, _ in programs)
 current = 0
@@ -1730,6 +1732,23 @@ write_shell_hook() {
     printf 'export PATH="$HOME/.local/bin:$PATH"\n\n'
     if selected flutter; then
       printf 'export FLUTTER_ROOT=%q\n' "$APPS/flutter/sdk"
+      if [ -x "$APPS/flutter/tools/jdk/bin/java" ]; then
+        printf 'if [ -z "${JAVA_HOME:-}" ]; then export JAVA_HOME=%q; fi\n' "$APPS/flutter/tools/jdk"
+      fi
+      if [ -x "$APPS/android/sdk/cmdline-tools/latest/bin/sdkmanager" ]; then
+        printf 'if [ -z "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" ]; then\n'
+        printf '  export ANDROID_HOME=%q ANDROID_SDK_ROOT=%q\n' "$APPS/android/sdk" "$APPS/android/sdk"
+        printf '  export ANDROID_USER_HOME=%q ANDROID_AVD_HOME=%q\n' "$APPS/android/state/.android" "$APPS/android/avd"
+        printf '  export ANDROID_ADB_SERVER_PORT="${ANDROID_ADB_SERVER_PORT:-5038}" ADB_SERVER_PORT="${ADB_SERVER_PORT:-5038}"\n'
+        printf '  export ADB_SERVER_SOCKET="${ADB_SERVER_SOCKET:-tcp:localhost:5038}"\n'
+        printf 'fi\n'
+      fi
+      if [ -x "$APPS/brave/brave" ]; then
+        printf 'if [ -z "${CHROME_EXECUTABLE:-}" ] && ! command -v google-chrome >/dev/null 2>&1; then export CHROME_EXECUTABLE=%q; fi\n' "$APPS/brave/brave"
+      fi
+      if [ -x "$APPS/flutter/tools/ninja/bin/ninja" ]; then
+        printf 'export PATH=%q:"$PATH"\n' "$APPS/flutter/tools/ninja/bin"
+      fi
       printf 'if [ -z "${PUB_CACHE:-}" ]; then export PUB_CACHE=%q; fi\n' "$APPS/flutter/cache/pub"
       printf 'if [ -z "${GRADLE_USER_HOME:-}" ]; then export GRADLE_USER_HOME=%q; fi\n' "$APPS/flutter/cache/gradle"
       printf 'unalias dart 2>/dev/null || true\n'
@@ -2051,12 +2070,14 @@ install_android() (
     return 1
   fi
   android_environment || return 1
-  if android_ready && [ "${UPDATE_ONLY:-0}" != 1 ]; then
+  if [ "${ANDROID_TOOLCHAIN_ONLY:-0}" = 1 ]; then
+    if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then return 0; fi
+  elif android_ready && [ "${UPDATE_ONLY:-0}" != 1 ]; then
     printf '11 (API 30, Google Play)\n' > "$ANDROID_BASE/.installed-version"
     ok 'Android 11 Google Play is ready; reusing the existing SDK and device.'
     return 0
   fi
-  if android_running; then
+  if [ "${ANDROID_TOOLCHAIN_ONLY:-0}" != 1 ] && android_running; then
     if android_ready; then
       warn 'Android emulator is running; keeping its SDK and image. Close all emulators, then run desk update android.'
       return 0
@@ -2064,8 +2085,12 @@ install_android() (
     fail 'Close the running Android emulators before finishing Android setup.'
     return 1
   fi
-  info 'Preparing Android 11 Google Play (1080x2424, 2 GB RAM)'
-  python3 - "$ANDROID_BASE" "${UPDATE_ONLY:-0}" <<'ANDROID_INSTALLER'
+  if [ "${ANDROID_TOOLCHAIN_ONLY:-0}" = 1 ]; then
+    info 'Preparing Android SDK command-line tools'
+  else
+    info 'Preparing Android 11 Google Play (1080x2424, 2 GB RAM)'
+  fi
+  python3 - "$ANDROID_BASE" "${UPDATE_ONLY:-0}" "${ANDROID_TOOLCHAIN_ONLY:-0}" <<'ANDROID_INSTALLER'
 import hashlib
 import json
 import os
@@ -2081,6 +2106,7 @@ import zipfile
 
 base = Path(sys.argv[1]).resolve()
 update = sys.argv[2] == '1'
+toolchain_only = sys.argv[3] == '1'
 repo = 'https://dl.google.com/android/repository/'
 sdk = base / 'sdk'
 downloads = base / 'downloads'
@@ -2148,8 +2174,9 @@ def install(root, path, repo_url, destination, required):
             return
     elif destination.exists():
         raise RuntimeError('unrecognized or incomplete existing package at ' + str(destination) + '; inspect it before retrying')
-    if shutil.disk_usage(base).free < 12 * 1024**3:
-        raise RuntimeError('keep at least 12 GB free in goinfre for Android downloads and extraction')
+    required_gb = 2 if toolchain_only else 12
+    if shutil.disk_usage(base).free < required_gb * 1024**3:
+        raise RuntimeError('keep at least ' + str(required_gb) + ' GB free in goinfre for Android downloads and extraction')
     url = urllib.parse.urljoin(repo_url, archive.findtext('url'))
     if urllib.parse.urlparse(url).hostname != 'dl.google.com':
         raise RuntimeError('unexpected archive host')
@@ -2217,6 +2244,14 @@ def install(root, path, repo_url, destination, required):
 
 
 def main():
+    if toolchain_only:
+        tools = metadata(repo + 'repository2-1.xml', 'repository.xml')
+        # The v23 sdkmanager delegates to the new Android CLI and drops the
+        # licence workflow Flutter doctor currently expects. Keep the stable
+        # Java-based tools; sdkmanager can still install current SDK packages.
+        install(tools, 'cmdline-tools;19.0', repo, sdk / 'cmdline-tools/latest',
+                ('bin/sdkmanager', 'source.properties'))
+        return
     packages = [('emulator', ('emulator',)), ('platform-tools', ('adb',))]
     needed = [(path, required) for path, required in packages
               if update or not complete_install(sdk / path, required)]
@@ -2255,7 +2290,8 @@ def main():
 try:
     main()
 except (OSError, ValueError, RuntimeError, ET.ParseError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
-    sys.exit(f'Android setup failed: {error}. Retry with desk install android.')
+    retry = 'desk flutter-setup android' if toolchain_only else 'desk install android'
+    sys.exit(f'Android setup failed: {error}. Retry with {retry}.')
 ANDROID_INSTALLER
 )
 
@@ -2329,7 +2365,7 @@ flutter_environment() {
     "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$TMPDIR" "$FLUTTER_BASE/downloads" || return 1
   # Reuse the managed Android SDK only when no external SDK was specified.
   # Its private ADB server is on 5038, not the usual 5037.
-  if [ -z "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" ] && [ -x "$APPS/android/sdk/platform-tools/adb" ]; then
+  if [ -z "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" ] && { [ -x "$APPS/android/sdk/platform-tools/adb" ] || [ -x "$APPS/android/sdk/cmdline-tools/latest/bin/sdkmanager" ]; }; then
     export ANDROID_HOME="$APPS/android/sdk" ANDROID_SDK_ROOT="$APPS/android/sdk"
   fi
   if [ "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" = "$APPS/android/sdk" ]; then
@@ -2340,6 +2376,22 @@ flutter_environment() {
     export ANDROID_ADB_SERVER_PORT="${ANDROID_ADB_SERVER_PORT:-5038}" ADB_SERVER_PORT="${ADB_SERVER_PORT:-5038}"
     export ADB_SERVER_SOCKET="${ADB_SERVER_SOCKET:-tcp:localhost:5038}"
     mkdir -p "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME" || return 1
+  fi
+  if [ -z "${JAVA_HOME:-}" ] && [ -x "$FLUTTER_BASE/tools/jdk/bin/java" ]; then
+    export JAVA_HOME="$FLUTTER_BASE/tools/jdk"
+  fi
+  if [ -n "${JAVA_HOME:-}" ]; then export PATH="$JAVA_HOME/bin:$PATH"; fi
+  if [ -x "$FLUTTER_BASE/tools/ninja/bin/ninja" ]; then
+    export PATH="$FLUTTER_BASE/tools/ninja/bin:$PATH"
+  fi
+  # Flutter must spawn a foreground browser with its own debugging profile.
+  # The ordinary desk brave launcher detaches and cannot serve this purpose.
+  if [ -z "${CHROME_EXECUTABLE:-}" ]; then
+    if command -v google-chrome >/dev/null 2>&1; then
+      export CHROME_EXECUTABLE="$(command -v google-chrome)"
+    elif [ -x "$APPS/brave/brave" ]; then
+      export CHROME_EXECUTABLE="$APPS/brave/brave"
+    fi
   fi
 }
 
@@ -2574,6 +2626,283 @@ try:
 except (OSError, ValueError, KeyError, RuntimeError, tarfile.TarError, subprocess.SubprocessError) as error:
     sys.exit('Flutter setup failed: ' + str(error))
 FLUTTER_INSTALLER
+)
+
+
+# Install optional portable tools only on explicit flutter-setup requests.
+# SDK archives and tool archives share the same goinfre download/tmp area.
+install_flutter_tool() (
+  flutter_environment || return 1
+  python3 - "$FLUTTER_BASE" "$1" <<'FLUTTER_TOOL'
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+from urllib.parse import urlparse
+import zipfile
+
+base, tool = Path(sys.argv[1]), sys.argv[2]
+destination = base / 'tools' / tool
+entry = 'bin/java' if tool == 'jdk' else 'bin/ninja'
+
+
+def fetch(url, target):
+    if urlparse(url).scheme != 'https':
+        raise RuntimeError('expected an HTTPS download URL')
+    part = target.with_name(target.name + '.part')
+    try:
+        subprocess.run(['curl', '-fL', '--retry', '2', '--connect-timeout', '15',
+                        '--speed-limit', '1024', '--speed-time', '60', url, '-o', str(part)], check=True)
+        part.replace(target)
+    finally:
+        part.unlink(missing_ok=True)
+
+
+def main():
+    if os.access(destination / entry, os.X_OK):
+        return
+    if destination.exists():
+        raise RuntimeError('inspect the incomplete tool installation at ' + str(destination))
+    machine = platform.machine()
+    if machine not in ('x86_64', 'aarch64'):
+        raise RuntimeError('unsupported tool architecture: ' + machine)
+    metadata = base / 'downloads' / (tool + '.json')
+    if tool == 'jdk':
+        arch = 'x64' if machine == 'x86_64' else 'aarch64'
+        fetch('https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=' + arch +
+              '&heap_size=normal&image_type=jdk&jvm_impl=hotspot&os=linux&vendor=eclipse', metadata)
+        package = json.loads(metadata.read_text())[0]['binary']['package']
+        url, checksum = package['link'], package['checksum']
+        if urlparse(url).hostname != 'github.com' or not urlparse(url).path.startswith('/adoptium/temurin21-binaries/releases/download/'):
+            raise RuntimeError('unexpected Temurin JDK archive URL')
+        required_space = 2 * 1024**3
+    elif tool == 'ninja':
+        fetch('https://pypi.org/pypi/ninja/json', metadata)
+        wheels = [item for item in json.loads(metadata.read_text())['urls']
+                  if item['filename'].endswith('.whl') and not item.get('yanked')
+                  and ('manylinux2014_' + machine in item['filename'] or
+                       'manylinux_2_17_' + machine in item['filename'])]
+        if not wheels:
+            raise RuntimeError('no compatible Linux Ninja wheel is available')
+        package = wheels[0]
+        url, checksum = package['url'], package['digests']['sha256']
+        if urlparse(url).hostname != 'files.pythonhosted.org':
+            raise RuntimeError('unexpected Ninja wheel URL')
+        required_space = 200 * 1024**2
+    else:
+        raise RuntimeError('unknown tool: ' + tool)
+    if not re.fullmatch(r'[a-fA-F0-9]{64}', checksum):
+        raise RuntimeError('missing tool SHA-256 checksum')
+    if shutil.disk_usage(base).free < required_space:
+        raise RuntimeError('not enough free space in goinfre for ' + tool)
+    archive = base / 'downloads' / Path(urlparse(url).path).name
+    fetch(url, archive)
+    digest = hashlib.sha256()
+    with archive.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    if digest.hexdigest().lower() != checksum.lower():
+        archive.unlink(missing_ok=True)
+        raise RuntimeError(tool + ' archive checksum mismatch')
+    with tempfile.TemporaryDirectory(prefix=tool + '-', dir=base / 'tmp') as directory:
+        stage = Path(directory)
+        if tool == 'jdk':
+            if not hasattr(tarfile, 'data_filter'):
+                raise RuntimeError('safe JDK extraction requires an updated Python tarfile module')
+            with tarfile.open(archive) as source:
+                source.extractall(stage, filter='data')
+            entries = list(stage.iterdir())
+            if len(entries) != 1 or not entries[0].is_dir():
+                raise RuntimeError('unexpected JDK archive layout')
+            content = entries[0]
+        else:
+            content = stage
+            with zipfile.ZipFile(archive) as source:
+                for member in source.infolist():
+                    output = (stage / member.filename).resolve()
+                    mode = member.external_attr >> 16
+                    if not output.is_relative_to(stage) or stat.S_ISLNK(mode):
+                        raise RuntimeError('unsafe Ninja ZIP entry')
+                    source.extract(member, stage)
+                    if output.is_file() and mode & 0o777:
+                        output.chmod(mode & 0o777)
+            # Wheels place scripts under VERSION.data/scripts; older Ninja
+            # wheels bundled the binary under ninja/data/bin instead.
+            binaries = list(stage.glob('*.data/scripts/ninja'))
+            legacy = stage / 'ninja/data/bin/ninja'
+            if legacy.is_file():
+                binaries.append(legacy)
+            if len(binaries) != 1 or not binaries[0].is_file():
+                raise RuntimeError('unexpected Ninja wheel layout')
+            (stage / 'bin').mkdir(exist_ok=True)
+            binaries[0].rename(stage / entry)
+        executable = content / entry
+        if not executable.is_file() or (tool == 'jdk' and not (content / 'bin/javac').is_file()):
+            raise RuntimeError('tool archive is missing required executables')
+        executable.chmod(executable.stat().st_mode | 0o755)
+        subprocess.run([str(executable), '--version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        content.rename(destination)
+    archive.unlink()
+    print('Installed ' + tool + ' in ' + str(destination), flush=True)
+
+
+try:
+    main()
+except (OSError, ValueError, IndexError, KeyError, RuntimeError, tarfile.TarError,
+        zipfile.BadZipFile, subprocess.SubprocessError) as error:
+    sys.exit('Flutter tool setup failed: ' + str(error))
+FLUTTER_TOOL
+)
+
+
+flutter_setup_android_unlocked() (
+  flutter_environment || return 1
+  if [ -n "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" ] && [ "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" != "$APPS/android/sdk" ]; then
+    fail 'An external Android SDK is configured. Use its sdkmanager to install platforms/build-tools, or unset ANDROID_HOME and ANDROID_SDK_ROOT to prepare the desk SDK.'
+    return 1
+  fi
+  local java_home=${JAVA_HOME:-} java_path packages manager
+  if [ -z "$java_home" ]; then
+    java_path=$(command -v java || true)
+    if [ -n "$java_path" ]; then java_home=$(dirname "$(dirname "$(readlink -f "$java_path")")"); fi
+  fi
+  if ! python3 - "$java_home" <<'CHECK_JDK'
+import pathlib, re, subprocess, sys
+root = pathlib.Path(sys.argv[1])
+if not sys.argv[1] or not (root / 'bin/javac').is_file():
+    sys.exit(1)
+try:
+    result = subprocess.run([str(root / 'bin/java'), '-version'], capture_output=True, text=True, timeout=15)
+    version = re.search(r'version "(\d+)', result.stdout + result.stderr)
+    sys.exit(0 if result.returncode == 0 and version and int(version[1]) >= 17 else 1)
+except (OSError, subprocess.SubprocessError):
+    sys.exit(1)
+CHECK_JDK
+  then
+    if [ -n "${JAVA_HOME:-}" ] && [ "$JAVA_HOME" != "$FLUTTER_BASE/tools/jdk" ]; then
+      fail 'JAVA_HOME must point to a JDK 17 or newer. Correct it, or unset JAVA_HOME to let desk install Temurin 21.'
+      return 1
+    fi
+    info 'Preparing portable Temurin JDK 21'
+    install_flutter_tool jdk || return 1
+    java_home="$FLUTTER_BASE/tools/jdk"
+  fi
+  export JAVA_HOME="$java_home" PATH="$java_home/bin:$PATH"
+  local ANDROID_TOOLCHAIN_ONLY=1
+  install_android || return 1
+  # install_android runs in its own subshell; restore SDK bindings here.
+  export ANDROID_HOME="$APPS/android/sdk" ANDROID_SDK_ROOT="$APPS/android/sdk"
+  flutter_environment || return 1
+  manager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+  if ! packages=$(python3 - "$FLUTTER_ROOT" <<'FLUTTER_ANDROID_VERSIONS'
+from pathlib import Path
+import re, sys
+source = (Path(sys.argv[1]) / 'packages/flutter_tools/lib/src/android/gradle_utils.dart').read_text()
+match = re.search(r"const (?:int )?compileSdkVersionInt\s*=\s*(\d+)\s*;", source)
+if not match:
+    match = re.search(r"const (?:String )?compileSdkVersion\s*=\s*['\"](\d+)['\"]\s*;", source)
+if not match:
+    sys.exit('Cannot determine the Android compile SDK from this Flutter installation.')
+api = match[1]
+print(api + ' ' + api + '.0.0')
+FLUTTER_ANDROID_VERSIONS
+  ); then return 1; fi
+  local api build_tools
+  read -r api build_tools <<< "$packages"
+  if [ -f "$ANDROID_HOME/platforms/android-$api/android.jar" ] && [ -x "$ANDROID_HOME/build-tools/$build_tools/aapt" ] && [ -x "$ANDROID_HOME/platform-tools/adb" ]; then
+    ok "Android SDK platform $api and build-tools $build_tools are ready."
+    return 0
+  fi
+  info 'Review Android SDK licences below. Accept only licences you agree to.'
+  "$manager" --sdk_root="$ANDROID_HOME" --licenses || return 1
+  local -a needed=("platforms;android-$api" "build-tools;$build_tools")
+  if [ ! -x "$ANDROID_HOME/platform-tools/adb" ]; then needed+=(platform-tools); fi
+  "$manager" --sdk_root="$ANDROID_HOME" --install "${needed[@]}" || return 1
+  if [ ! -f "$ANDROID_HOME/platforms/android-$api/android.jar" ] || [ ! -x "$ANDROID_HOME/build-tools/$build_tools/aapt" ] || [ ! -x "$ANDROID_HOME/platform-tools/adb" ]; then
+    fail 'Android packages are incomplete. Retry desk flutter-setup android and review any pending licence prompts.'
+    return 1
+  fi
+  ok "Android build tools are ready (SDK $api)."
+)
+
+
+flutter_setup_linux() (
+  flutter_environment || return 1
+  if ! command -v ninja >/dev/null 2>&1; then
+    info 'Preparing portable Ninja'
+    install_flutter_tool ninja || return 1
+    flutter_environment || return 1
+  fi
+  local tool missing=0
+  for tool in clang++ cmake pkg-config; do
+    if ! command -v "$tool" >/dev/null 2>&1; then warn "Linux build dependency missing: $tool"; missing=1; fi
+  done
+  if ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists gtk+-3.0; then
+    warn 'Linux build dependency missing: GTK 3 development libraries.'
+    missing=1
+  fi
+  if ! command -v eglinfo >/dev/null 2>&1; then
+    warn 'eglinfo is unavailable. On Ubuntu, mesa-utils supplies this optional graphics diagnostic.'
+  fi
+  if [ "$missing" = 1 ]; then
+    fail 'Linux desktop still needs system packages. On Ubuntu, ask an administrator to run: apt install clang cmake pkg-config libgtk-3-dev mesa-utils'
+    return 1
+  fi
+  ok 'Linux desktop build tools are ready.'
+)
+
+
+flutter_setup() (
+  local -a saved_programs=("${PROGRAMS[@]}")
+  local -a targets=("$@") PROGRAMS=(android-toolchain web-toolchain)
+  local -a PICKER_PROGRAMS=(android-toolchain web-toolchain linux-toolchain)
+  local PICKER_TITLE='Choose Flutter build targets' PICKER_ACTION=prepare answer target
+  local android=0 web=0 linux=0 failed=0
+  if [ "$#" = 0 ]; then
+    if [ -t 0 ]; then
+      answer=$(checkbox_programs) || return $?
+      read -r -a targets <<< "$answer"
+    else
+      targets=(android web)
+    fi
+  fi
+  for target in "${targets[@]}"; do
+    case "$target" in
+      android|android-toolchain) android=1 ;;
+      web|web-toolchain) web=1 ;;
+      linux|linux-toolchain) linux=1 ;;
+      all) android=1; web=1; linux=1 ;;
+      none) [ "${#targets[@]}" = 1 ] || { fail 'Use none on its own.'; return 2; } ;;
+      *) fail "Unknown Flutter target: $target. Choose android, web, linux, or all."; return 2 ;;
+    esac
+  done
+  PROGRAMS=("${saved_programs[@]}")
+  if [ "$((android + web + linux))" = 0 ]; then info 'No Flutter targets selected.'; return 0; fi
+  flutter_ready || { fail 'Install Flutter first with desk install flutter.'; return 1; }
+  flutter_environment || return 1
+  if [ "$web" = 1 ]; then
+    if [ -n "${CHROME_EXECUTABLE:-}" ] && [ -x "$CHROME_EXECUTABLE" ]; then
+      ok "Flutter web browser: $(pretty "$CHROME_EXECUTABLE")"
+    else
+      fail 'No Flutter web browser found. Select Brave in desk install, or set CHROME_EXECUTABLE to a Chromium browser executable.'
+      failed=1
+    fi
+  fi
+  if [ "$android" = 1 ]; then with_lock_wait android flutter_setup_android_unlocked || failed=1; fi
+  if [ "$linux" = 1 ]; then flutter_setup_linux || failed=1; fi
+  # Refresh integrations without changing the user's installation selection.
+  with_lock_wait core write_shell_hook || failed=1
+  info 'Check the result with desk flutter doctor -v.'
+  return "$failed"
 )
 
 
@@ -3752,6 +4081,11 @@ main() {
     flutter|dart)
       with_lock_wait core install_self || return 1
       open_app "$cmd" "$@"
+      ;;
+
+    flutter-setup)
+      with_lock_wait core install_self || return 1
+      with_lock_wait flutter flutter_setup "$@"
       ;;
 
     _android-run)
