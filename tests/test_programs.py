@@ -1,6 +1,7 @@
 """Exercise selection, verified native installation, and terminal launch offline."""
 
 import base64
+import fcntl
 import hashlib
 import io
 import json
@@ -9,8 +10,11 @@ from pathlib import Path
 import pty
 import select
 import signal
+import shutil
+import struct
 import subprocess
 import tarfile
+import termios
 import tempfile
 import time
 import unittest
@@ -41,6 +45,7 @@ class ProgramTests(unittest.TestCase):
         )
         # Never use the host's credentials or Codex state in these tests.
         self.env.pop("CODEX_HOME", None)
+        self.env.pop("CLAUDE_CONFIG_DIR", None)
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.env["PATH"] = f"{self.bin}:{self.env['PATH']}"
@@ -54,7 +59,16 @@ with (root / 'requests').open('a') as f:
     f.write(url + '\\n')
 if (root / 'offline').exists():
     sys.exit(22)
-if url.endswith('/latest'):
+if '@anthropic-ai' in url:
+    if url.endswith('/latest'):
+        source = root / 'claude-latest.json'
+    elif url.endswith('/2.3.4'):
+        source = root / 'claude-platform.json'
+    elif url.endswith('/claude-test.tgz'):
+        source = root / 'claude-artifact.tgz'
+    else:
+        sys.exit('Unexpected Claude download: ' + url)
+elif url.endswith('/latest'):
     source = root / 'latest.json'
 elif url.endswith('/1.2.3-linux-x64'):
     source = root / 'platform.json'
@@ -72,7 +86,7 @@ else:
         binary = b'''#!/usr/bin/env python3
 import json, os, pathlib, sys
 if sys.argv[1:] == ['--version']:
-    print('codex-cli 1.2.3')
+    print('claude 2.3.4' if pathlib.Path(sys.argv[0]).name == 'claude' else 'codex-cli 1.2.3')
     sys.exit(0)
 root = pathlib.Path(os.environ['DESK_FIXTURE'])
 (root / 'launch.json').write_text(json.dumps({
@@ -80,6 +94,9 @@ root = pathlib.Path(os.environ['DESK_FIXTURE'])
     'cache': os.environ.get('XDG_CACHE_HOME'),
     'tmp': os.environ.get('TMPDIR'),
     'home': os.environ.get('CODEX_HOME'),
+    'claude_config': os.environ.get('CLAUDE_CONFIG_DIR'),
+    'claude_tmp': os.environ.get('CLAUDE_CODE_TMPDIR'),
+    'updates_disabled': os.environ.get('DISABLE_AUTOUPDATER'),
     'stdin': sys.stdin.read(),
     'path': os.environ['PATH'],
 }))
@@ -106,6 +123,28 @@ sys.exit(int(os.environ.get('DESK_TEST_EXIT', '0')))
             },
         }
         self.write_platform()
+        self.claude = self.storage / "apps/claude/claude"
+        with tarfile.open(self.root / "claude-artifact.tgz", "w:gz") as archive:
+            info = tarfile.TarInfo("package/claude")
+            info.size, info.mode = len(binary), 0o755
+            archive.addfile(info, io.BytesIO(binary))
+        integrity = "sha512-" + base64.b64encode(
+            hashlib.sha512((self.root / "claude-artifact.tgz").read_bytes()).digest()
+        ).decode()
+        (self.root / "claude-latest.json").write_text(json.dumps({
+            "version": "2.3.4",
+            "optionalDependencies": {
+                "@anthropic-ai/claude-code-linux-x64": "2.3.4",
+            },
+        }))
+        self.claude_platform = {
+            "version": "2.3.4",
+            "dist": {
+                "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-test.tgz",
+                "integrity": integrity,
+            },
+        }
+        (self.root / "claude-platform.json").write_text(json.dumps(self.claude_platform))
 
     @staticmethod
     def write_executable(path, text):
@@ -237,7 +276,7 @@ main _auto
 prepare_vscode_unlocked() { echo code >> "$DESK_FIXTURE/prepared"; }
 prepare_brave_unlocked() { echo brave >> "$DESK_FIXTURE/prepared"; }
 prepare_codex_unlocked() { echo codex >> "$DESK_FIXTURE/prepared"; }
-main install 3,c code
+main install ai,c code
 ''')
         self.assertEqual((self.state / "programs").read_text(), "code\ncodex\n")
         self.assertEqual((self.root / "prepared").read_text(), "code\ncodex\n")
@@ -304,16 +343,19 @@ launch_apps
         self.assertEqual((private / "auth.json").read_text(), "existing credential fixture")
         self.assertEqual((self.state / "programs").read_text(), "codex\n")
 
-    def interact(self, command, answers, prompt=b"Install: "):
+    def interact(self, command, answers, prompt=b"Space: toggle"):
         master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
+        before = termios.tcgetattr(slave)
         process = subprocess.Popen(
             [str(DESK), command], stdin=slave, stdout=slave, stderr=slave,
-            env=self.env,
+            env=self.env, start_new_session=True,
+            preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0),
         )
         os.close(slave)
         output = b""
-        answers = iter(answers)
-        prompts = 0
+        keys = b"".join(answers)
+        sent = False
         try:
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
@@ -323,24 +365,66 @@ launch_apps
                     except OSError:
                         break
                     output += chunk
-                    if output.count(prompt) > prompts:
-                        prompts += 1
-                        os.write(master, next(answers))
-            return process.wait(timeout=2), output
+                    if not sent and prompt in output:
+                        sent = True
+                        os.write(master, keys)
+            code = process.wait(timeout=2)
+            self.assertEqual(termios.tcgetattr(master), before, "Terminal settings were not restored")
+            return code, output
         finally:
             if process.poll() is None:
-                process.kill()
+                os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
             os.close(master)
 
-    def test_interactive_chooser_recovers_from_invalid_input(self):
-        code, output = self.interact("install", [b"bad-choice\n", b"3\n"])
+    def test_checklist_uses_arrows_and_space(self):
+        code, output = self.interact("install", [b"n\x1b[B\x1b[B \r"])
         self.assertEqual(code, 0, output.decode())
-        self.assertIn(b"Unknown program", output)
+        self.assertIn(b"[x] Codex CLI", output)
         self.assertEqual((self.state / "programs").read_text(), "codex\n")
 
+    def test_checklist_can_select_both_ai_tools(self):
+        code, output = self.interact("install", [b"njjj \x1b[A \r"])
+        self.assertEqual(code, 0, output.decode())
+        self.assertEqual((self.state / "programs").read_text(), "codex\nclaude\n")
+        self.assertTrue(self.codex.exists())
+        self.assertTrue(self.claude.exists())
+        self.assertFalse((self.storage / "apps/brave").exists())
+
+    def test_checklist_preserves_saved_choices_when_enter_is_pressed(self):
+        self.save_selection("claude\n")
+        code, output = self.interact("install", [b"\r"])
+        self.assertEqual(code, 0, output.decode())
+        self.assertIn(b"[x] Claude Code", output)
+        self.assertEqual((self.state / "programs").read_text(), "claude\n")
+
+    def test_checklist_select_none_does_not_download_programs(self):
+        code, output = self.interact("install", [b"n\r"])
+        self.assertEqual(code, 0, output.decode())
+        self.assertEqual((self.state / "programs").read_text(), "none\n")
+        self.assertFalse((self.root / "requests").exists())
+
+    def test_checklist_all_checks_every_program_before_cancel(self):
+        code, output = self.interact("install", [b"aq"])
+        self.assertEqual(code, 130, output.decode())
+        for title in ("VS Code", "Brave", "Codex CLI", "Claude Code"):
+            self.assertIn(f"[x] {title}".encode(), output)
+        self.assertFalse((self.state / "programs").exists())
+        self.assertFalse((self.root / "requests").exists())
+
+    def test_escape_and_ctrl_c_cancel_without_changing_selection(self):
+        self.save_selection("claude\n")
+        for key in (b"\x1b", b"\x03"):
+            with self.subTest(key=key):
+                code, output = self.interact("install", [key])
+                # Bash may itself receive the terminal's SIGINT; both forms
+                # report status 130 to the invoking interactive shell.
+                self.assertIn(code, (130, -signal.SIGINT), output.decode())
+                self.assertEqual((self.state / "programs").read_text(), "claude\n")
+        self.assertFalse((self.root / "requests").exists())
+
     def test_first_shell_offers_selection_and_prepares_only_codex(self):
-        code, output = self.interact("_shell", [b"3\n"])
+        code, output = self.interact("_shell", [b"njj \r"])
         self.assertEqual(code, 0, output.decode())
         self.assertIn(b"Choose your programs", output)
         self.assertIn(b"Workstation ready", output)
@@ -352,7 +436,7 @@ launch_apps
 
     def test_cancel_keeps_choice_and_does_not_download(self):
         self.save_selection("brave\n")
-        code, output = self.interact("install", [b"q\n"])
+        code, output = self.interact("install", [b"q"])
         self.assertEqual(code, 130, output.decode())
         self.assertEqual((self.state / "programs").read_text(), "brave\n")
         self.assertFalse((self.root / "requests").exists())
@@ -376,11 +460,106 @@ launch_apps
         process = subprocess.Popen([str(self.codex)], start_new_session=True)
         try:
             result = self.run_desk("install", "codex")
-            self.assertIn("exit Codex", result.stderr)
+            self.assertIn("exit Codex CLI", result.stderr)
             self.assertEqual(marker.read_text(), "0.9.0\n")
             self.assertNotIn("codex-test.tgz", (self.root / "requests").read_text())
         finally:
             os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=5)
+
+    def test_claude_install_and_repeat_use_only_verified_native_artifact(self):
+        self.run_desk("install", "claude")
+        self.assertTrue(self.claude.is_file())
+        self.assertFalse(self.codex.exists())
+        self.assertEqual((self.state / "programs").read_text(), "claude\n")
+        self.assertTrue((self.home / ".local/bin/claude").exists())
+        self.assertIn("unalias claude", (self.home / ".bashrc").read_text())
+        self.run_desk("p")
+        self.assertEqual((self.root / "requests").read_text().count("claude-test.tgz"), 1)
+        status = self.run_desk("st")
+        self.assertIn("Claude Code", status.stdout)
+        self.assertIn("2.3.4", status.stdout)
+
+    def test_claude_launch_preserves_arguments_input_exit_status_and_config(self):
+        self.run_desk("install", "claude")
+        config = str(self.home / "existing claude config")
+        self.env.update(CLAUDE_CONFIG_DIR=config, DESK_TEST_EXIT="19")
+        result = self.run_desk("claude", "--print", "prompt with spaces", input="hello\n", check=False)
+        self.assertEqual(result.returncode, 19, result.stderr)
+        launch = json.loads((self.root / "launch.json").read_text())
+        cache = self.storage / "cache/claude"
+        self.assertEqual(launch["args"], ["--print", "prompt with spaces"])
+        self.assertEqual(launch["stdin"], "hello\n")
+        self.assertEqual(launch["claude_config"], config)
+        self.assertEqual(launch["cache"], str(cache / "xdg"))
+        self.assertEqual(launch["tmp"], str(cache / "tmp"))
+        self.assertEqual(launch["claude_tmp"], str(cache / "tmp"))
+        self.assertEqual(launch["updates_disabled"], "1")
+        self.assertEqual(cache.stat().st_mode & 0o777, 0o700)
+        self.assertFalse((self.state / "locks/claude.lock").exists())
+
+    def test_corrupt_claude_artifact_keeps_the_existing_installation(self):
+        self.write_executable(self.claude, "#!/bin/sh\necho old claude\n")
+        before = self.claude.read_bytes()
+        self.claude_platform["dist"]["integrity"] = "sha512-" + base64.b64encode(bytes(64)).decode()
+        (self.root / "claude-platform.json").write_text(json.dumps(self.claude_platform))
+        result = self.run_desk("install", "claude", check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("checksum mismatch", result.stderr)
+        self.assertEqual(self.claude.read_bytes(), before)
+        self.assertFalse((self.state / "initialized").exists())
+
+    def test_claude_selection_drives_background_update_and_all_includes_claude(self):
+        self.save_selection("claude\n")
+        self.source('''
+prepare_core() { :; }
+prepare_claude_unlocked() { echo claude >> "$DESK_FIXTURE/prepared"; }
+main _auto
+normalize_programs all
+printf '%s\\n' "${PROGRAMS[@]}" > "$DESK_FIXTURE/all-programs"
+''')
+        self.assertEqual((self.root / "prepared").read_text(), "claude\n")
+        self.assertEqual((self.root / "all-programs").read_text(), "code\nbrave\ncodex\nclaude\n")
+
+    def test_clean_preserves_claude_account_data_and_cleans_its_cache(self):
+        self.run_desk("install", "claude")
+        config = self.home / ".claude"
+        config.mkdir()
+        (config / "settings.json").write_text("existing config fixture")
+        cache = self.storage / "cache/claude"
+        cache.mkdir(parents=True)
+        (cache / "cache-file").touch()
+        self.source("setup_runtime; clean_reset_unlocked")
+        self.assertFalse(self.claude.exists())
+        self.assertFalse(cache.exists())
+        self.assertFalse((self.home / ".local/bin/claude").exists())
+        self.assertEqual((config / "settings.json").read_text(), "existing config fixture")
+        self.assertEqual((self.state / "programs").read_text(), "claude\n")
+
+    def test_busy_claude_lock_blocks_reset_without_leaking_other_locks(self):
+        self.save_selection("claude\n")
+        lock = self.state / "locks/claude.lock"
+        lock.mkdir(parents=True)
+        (lock / "pid").write_text(str(os.getpid()))
+        code, output = self.interact("clean", [b"y\n"], b"Continue? [y/N] ")
+        self.assertEqual(code, 1, output.decode())
+        self.assertTrue(lock.exists())
+        for name in ("first-run", "core", "code", "brave", "codex"):
+            self.assertFalse((self.state / "locks" / (name + ".lock")).exists())
+
+    def test_renamed_native_claude_process_postpones_update_and_blocks_reset(self):
+        self.claude.parent.mkdir(parents=True)
+        shutil.copy2(shutil.which("sleep"), self.claude)
+        process = subprocess.Popen(["friendly-process-title", "30"], executable=str(self.claude))
+        try:
+            result = self.run_desk("install", "claude")
+            self.assertIn("exit Claude Code", result.stderr)
+            self.assertNotIn("claude-test.tgz", (self.root / "requests").read_text())
+            code, output = self.interact("clean", [b"y\n"], b"Continue? [y/N] ")
+            self.assertEqual(code, 1, output.decode())
+            self.assertIn(b"Claude Code is running", output)
+        finally:
+            process.terminate()
             process.wait(timeout=5)
 
 

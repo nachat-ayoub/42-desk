@@ -72,10 +72,10 @@ printf \
 
 
 printf '\n'
-printf 'Choose VS Code, Brave, Codex CLI, or any combination.\n'
-printf 'Your next terminal will offer the program chooser before downloading apps.\n\n'
-printf 'Or choose now: desk install\n'
-printf 'Without prompts: ~/.local/bin/desk install code codex\n\n'
+printf 'Choose VS Code, Brave, Codex CLI, Claude Code, or any combination.\n'
+printf 'New installations show a checkbox picker in your next terminal.\n\n'
+printf 'Open the picker now: ~/.local/bin/desk install\n'
+printf 'Without prompts: ~/.local/bin/desk install codex claude\n\n'
 
 
 case "$(basename "${SHELL:-}")" in

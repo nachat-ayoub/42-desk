@@ -5,9 +5,9 @@
 `42-desk` is a small no-sudo workstation bootstrapper designed for shared
 42 / 1337 Linux machines.
 
-It installs your choice of native **VS Code, Brave, and Codex CLI** inside
+It installs your choice of native **VS Code, Brave, Codex CLI, and Claude Code** inside
 `goinfre`. It migrates existing editor/browser profiles, creates familiar
-`code`, `brave`, and `codex` commands for the selected programs, and checks
+`code`, `brave`, `codex`, and `claude` commands for the selected programs, and checks
 for updates when you open a shell.
 
 ## Features
@@ -16,15 +16,15 @@ for updates when you open a shell.
 - Uses `goinfre`
 - Native VS Code
 - Native Brave
-- Native Codex CLI (no Node.js/npm required)
-- Interactive program chooser and saved selections
-- Codex cache, logs, and temporary files in `goinfre`
+- Native Codex CLI and Claude Code (no Node.js/npm required)
+- Keyboard checkbox picker and saved selections
+- AI CLI caches and temporary files in `goinfre`, plus Codex logs
 - VS Code profile migration
 - Brave profile migration
 - VS Code extension support
 - `code .`
 - `brave <url>`
-- `codex` in your current terminal
+- `codex` and `claude` in your current terminal
 - Desktop application entries
 - Visible first-run setup
 - Safe per-app locking
@@ -48,7 +48,7 @@ source ~/.zshrc
 ```
 
 The installer registers shell integration first. Your next terminal offers a
-program chooser before downloading applications. Setup shows the selected
+checkbox picker before downloading applications. Setup shows the selected
 programs and progress such as `[1/2] VS Code`.
 
 You can also choose immediately:
@@ -64,37 +64,54 @@ You can also choose immediately:
 The download installer reads `main`. To try a local checkout before publishing,
 run `./desk install` from the repository instead.
 
+## Update an existing installation
+
+From your repository checkout:
+
+```bash
+git pull
+./desk install
+```
+
+This runs the updated local script, opens the checkbox picker, and refreshes
+`~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
+the installed command. Verify with `desk --version` (2.5.0) and `desk st`.
+
 ## First setup
 
 On the first shell after installation, `42-desk` performs the initial setup
-in the foreground. Select numbers or program names, separated by spaces or
-commas. Press Enter to keep the displayed selection, or `q` to cancel.
+in the foreground. Use **Up/Down** (or **j/k**) to move and **Space** to toggle
+a checkbox. **Enter** confirms the checked programs; **a** selects all, **n**
+selects none, and **Esc**, **q**, or **Ctrl-C** cancels without saving.
 
 Example:
 
 ```text
-42-desk first setup
-Preparing this workstation for you.
-
 Choose your programs
-Program files and the Codex cache use /goinfre/you. No sudo needed.
 
-  1  [x] VS Code
-  2  [x] Brave
-  3  [ ] Codex CLI
+ > [x] VS Code
+   [x] Brave
+   [ ] Codex CLI
+   [ ] Claude Code
 
-Enter numbers or names, e.g. 1 3; all; none; q to cancel.
-Enter keeps: VS Code, Brave
-Install: 1 3
-› Selected: VS Code, Codex CLI
-› [1/2] VS Code
+Up/Down or j/k: move   Space: toggle
+Enter: install   a: all   n: none   Esc/q: cancel
+```
+
+The checklist opens in your terminal and restores the previous screen when
+you confirm or cancel. Saved choices are checked when you open it again.
+After confirmation, setup reports progress:
+
+```text
+› Selected: Codex CLI, Claude Code
+› [1/2] Codex CLI
 ...
-› [2/2] Codex CLI
+› [2/2] Claude Code
 ...
 ✓ Workstation ready
 
-  VS Code    code .
   Codex CLI  codex   (sign in on first use)
+  Claude     claude  (sign in on first use)
 
 Change programs anytime: desk install
 ```
@@ -132,8 +149,8 @@ desk
 ```
 
 Prepare your saved selection and open the selected desktop applications.
-Codex is a terminal application: run `codex` or `desk ai` when you want to use it.
-Plain `desk` does not start a Codex session automatically.
+The AI tools run in your current terminal: use `codex` / `desk ai` or
+`claude` / `desk claude`. Plain `desk` does not start AI sessions automatically.
 
 ### VS Code
 
@@ -188,14 +205,37 @@ Installation does not log you in or require an API key. Use Codex's normal
 sign-in flow after installation. Updates are managed with `desk p`; running
 Codex sessions postpone binary replacement.
 
+### Claude Code
+
+```bash
+desk install claude        # Select only Claude Code and install/update it
+claude                     # Start in the current terminal
+desk claude --help         # Run without relying on PATH
+desk cc --version          # Short alias
+```
+
+Desk downloads Anthropic's native Linux platform artifact from the official
+`@anthropic-ai/claude-code-linux-*` packages on `registry.npmjs.org`, verifies
+its SHA-512 integrity, and installs it in `goinfre`. This uses the native binary
+directly, without npm global installation or a Node.js dependency. Installation
+requires `curl`, `python3`, and `tar`. Linux x86-64 and ARM64 are supported;
+musl systems use Anthropic's matching musl package.
+
+Claude keeps your terminal, input, arguments, and exit status. Sign in using
+Claude's own startup flow. Desk leaves authentication, settings, and conversation
+history in their existing locations, including a custom `CLAUDE_CONFIG_DIR`.
+Updates are managed by `desk p`; the managed launcher disables Claude's separate
+automatic updater to keep installation files in `goinfre`.
+
 ### Choose programs
 
 ```bash
-desk install               # Interactive chooser
-desk choose                # Alias for the same chooser
+desk install               # Interactive checkbox picker
+desk choose                # Alias for the same picker
 desk install code codex    # Save exactly this selection and prepare it
 desk install brave         # Browser only
-desk install all           # VS Code, Brave, and Codex CLI
+desk install codex claude   # Both terminal AI tools
+desk install all           # All four programs
 desk install none          # Disable automatic program preparation
 desk p                     # Prepare/update the saved selection
 desk st                    # Show selection, installation state, and versions
@@ -209,8 +249,8 @@ do not change the selection. `desk clean` resets all desk-managed programs.
 
 Existing installations retain VS Code and Brave until you choose differently.
 A fresh noninteractive `desk p` also uses these defaults. For unattended
-selection, pass names explicitly to `desk install`; the argument-free chooser
-requires an interactive terminal. Invalid choices and cancellation leave the
+selection, pass names explicitly to `desk install`; the argument-free picker
+requires an interactive terminal and Python 3. Invalid choices and cancellation leave the
 saved selection unchanged.
 
 ### Automatic WebGL compatibility
@@ -243,6 +283,7 @@ desk                 prepare selection + open selected desktop apps
 desk c [ARGS]        open VS Code
 desk b [ARGS]        open Brave
 desk ai [ARGS]       run Codex CLI in this terminal
+desk claude [ARGS]   run Claude Code in this terminal
 desk install [APPS]  choose, save, and prepare programs
 desk p               prepare/update selected programs
 desk s [c|b]         re-import profile data
@@ -290,7 +331,7 @@ configure extensions
 open project
 ```
 
-It does not wait for Brave or Codex.
+It does not wait for Brave, Codex, or Claude.
 
 Likewise:
 
@@ -370,6 +411,7 @@ Each program has a separate directory lock, alongside the core and first-run loc
 ~/.config/desk/locks/code.lock/
 ~/.config/desk/locks/brave.lock/
 ~/.config/desk/locks/codex.lock/
+~/.config/desk/locks/claude.lock/
 ~/.config/desk/locks/core.lock/
 ~/.config/desk/locks/first-run.lock/
 ```
@@ -387,6 +429,7 @@ Applications normally live in:
 /goinfre/$USER/apps/vscode
 /goinfre/$USER/apps/brave
 /goinfre/$USER/apps/codex
+/goinfre/$USER/apps/claude
 ```
 
 If `/goinfre` is unavailable, `desk` falls back to:
@@ -407,6 +450,7 @@ Wrappers:
 ~/.local/bin/code
 ~/.local/bin/brave
 ~/.local/bin/codex
+~/.local/bin/claude
 ```
 
 ### Codex cache and persistent data
@@ -430,6 +474,20 @@ stay in `~/.codex` (or your existing `CODEX_HOME`).** They are not treated as
 cache or moved into potentially disposable campus storage. Existing logs are
 not migrated; new managed launches use the log directory above. You can supply
 an explicit Codex `-c log_dir=...` option to override the wrapper's default.
+
+### Claude cache and persistent data
+
+Managed Claude launches set:
+
+```text
+$GOINFRE/cache/claude/xdg   XDG_CACHE_HOME for Claude and its children
+$GOINFRE/cache/claude/tmp   TMPDIR and CLAUDE_CODE_TMPDIR
+```
+
+These directories are private to your user. Existing caches are not moved or
+deleted during installation. Claude's account data, settings, history, debug
+files, and plugins stay in their existing configuration locations; these are
+not treated as disposable cache. A custom `CLAUDE_CONFIG_DIR` is preserved.
 
 ## Profiles
 
@@ -480,7 +538,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.4.0
+42-desk 2.5.0
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI
@@ -489,9 +547,11 @@ Example:
   VS Code      yes       installed    ...
   Brave        no        not installed -
   Codex CLI    yes       installed    ...
+  Claude Code  no        not installed -
 
   Update log   ~/.config/desk/last-run.log
   Codex cache  /goinfre/you/cache/codex
+  Claude cache /goinfre/you/cache/claude
 
 Install/change programs: desk install
 Prepare/update selection: desk p
@@ -525,13 +585,14 @@ desk clean
 - removes desk-managed VS Code
 - removes desk-managed Brave
 - removes desk-managed Codex CLI and its managed cache
-- removes the managed `code`, `brave`, and `codex` wrappers
+- removes desk-managed Claude Code and its managed cache
+- removes the managed `code`, `brave`, `codex`, and `claude` wrappers
 - removes desktop launchers
 - removes first-run and update state
 - keeps `desk` itself installed
 - keeps the shell hook installed
 - keeps the selected programs
-- keeps Codex credentials, configuration, and sessions
+- keeps Codex and Claude credentials, configuration, and sessions
 
 After the clean succeeds:
 
@@ -599,7 +660,7 @@ State:
 ## Desktop launchers
 
 `42-desk` creates user desktop entries for selected VS Code and Brave installations.
-Codex runs in the terminal and has no desktop launcher.
+Codex and Claude run in the terminal and have no desktop launchers.
 
 The Brave entry appears as:
 
@@ -626,8 +687,9 @@ No root access is required.
 ## Repository
 
 CLI regression checks (no desktop session, network, or application download required).
-They cover program selection, installation integrity, repeat setup, cache routing,
-terminal argument/input/exit handling, and Brave launch behavior:
+They cover checkbox keyboard controls and terminal restoration, saved selections,
+native installation integrity, repeat setup, cache routing, terminal argument/input/exit
+handling, and Brave launch behavior:
 
 ```bash
 bash -n desk install.sh
