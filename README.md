@@ -137,6 +137,29 @@ or directly:
 brave https://github.com
 ```
 
+### Automatic WebGL compatibility
+
+Run `desk` as usual to open VS Code and Brave. Brave keeps your existing
+accounts, history, bookmarks, extensions, and profile.
+
+On workstations with no accessible GPU render node under `/dev/dri/renderD*`,
+`desk` automatically adds `--ignore-gpu-blocklist` when starting Brave. This
+allows Mesa's software renderer (such as `llvmpipe`) to attempt WebGL without
+sudo. The same behavior applies to `desk b` and the managed `brave` command.
+Workstations with an accessible render node keep the default graphics flags.
+
+After installing this change, fully quit Brave once using Menu > Exit or
+Ctrl+Shift+Q, then run `desk`. Chromium reads GPU flags when its browser process
+starts; an already-running browser cannot pick up changed launch flags. You can
+check `brave://gpu` to confirm that WebGL works with your normal profile.
+
+This restores a software-rendering path, not AMD hardware acceleration. CPU
+rendering can be slow, and bypassing Chromium's blocklist can expose rendering
+bugs or instability. The sandbox stays enabled. If Linux was booted with
+`nomodeset`, enabling the hardware driver still requires an administrator.
+If WebGL only works with a clean test profile, check acceleration settings and
+extensions in your existing profile; `desk` does not reset your data.
+
 ## Commands
 
 ```text
@@ -481,6 +504,13 @@ $HOME
 No root access is required.
 
 ## Repository
+
+CLI regression checks (no desktop session or browser download required):
+
+```bash
+bash -n desk install.sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+```
 
 ```text
 https://github.com/nachat-ayoub/42-desk

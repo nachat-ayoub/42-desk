@@ -1552,8 +1552,22 @@ launch_vscode_unlocked() {
 }
 
 
+has_gpu_render_device() {
+  local device
+
+  for device in "$1"/renderD*; do
+    if [ -c "$device" ] && [ -r "$device" ] && [ -w "$device" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+
 launch_brave_unlocked() {
   local cmd_pid
+  local -a gpu_args=()
 
   if ! brave_ready; then
     prepare_brave_unlocked || true
@@ -1565,9 +1579,17 @@ launch_brave_unlocked() {
     return 1
   }
 
+  # With no usable render node (e.g. a workstation booted with nomodeset),
+  # Mesa may fall back to llvmpipe, which Chromium blocklists for WebGL.
+  # Keep the usual profile and sandbox; allow that software-rendering path.
+  if ! has_gpu_render_device /dev/dri; then
+    gpu_args=(--ignore-gpu-blocklist)
+  fi
+
   "$APPS/brave/brave" \
     --class="$BRAVE_WM_CLASS" \
     --disk-cache-size="$BRAVE_CACHE_BYTES" \
+    "${gpu_args[@]}" \
     "$@" &
 
   cmd_pid=$!
