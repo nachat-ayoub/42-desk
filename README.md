@@ -7,8 +7,9 @@
 
 It installs your choice of native **VS Code, Brave, Codex CLI, and Claude Code** inside
 `goinfre`. It migrates existing editor/browser profiles, creates familiar
-`code`, `brave`, `codex`, and `claude` commands for the selected programs, and checks
-for updates when you open a shell.
+`code`, `brave`, `codex`, and `claude` commands for the selected programs.
+Choose what to open with `desk`, and update installed programs with `desk update`.
+Shell startup also checks your saved installation selection for updates.
 
 ## Features
 
@@ -17,7 +18,8 @@ for updates when you open a shell.
 - Native VS Code
 - Native Brave
 - Native Codex CLI and Claude Code (no Node.js/npm required)
-- Keyboard checkbox picker and saved selections
+- Separate checkbox pickers for installation and launching
+- Explicit updates for installed programs
 - AI CLI caches and temporary files in `goinfre`, plus Codex logs
 - VS Code profile migration
 - Brave profile migration
@@ -75,7 +77,8 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.5.0) and `desk st`.
+the installed command. Verify with `desk --version` (2.6.0) and `desk st`.
+Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
 
@@ -100,7 +103,8 @@ Enter: install   a: all   n: none   Esc/q: cancel
 
 The checklist opens in your terminal and restores the previous screen when
 you confirm or cancel. Saved choices are checked when you open it again.
-After confirmation, setup reports progress:
+After confirmation, setup reports progress. It installs the chosen programs
+without opening them; run `desk` when you want to launch them:
 
 ```text
 › Selected: Codex CLI, Claude Code
@@ -148,9 +152,37 @@ maintenance and update checks run in the background.
 desk
 ```
 
-Prepare your saved selection and open the selected desktop applications.
-The AI tools run in your current terminal: use `codex` / `desk ai` or
-`claude` / `desk claude`. Plain `desk` does not start AI sessions automatically.
+Choose which **installed** programs to open with the checkbox picker. Up/Down
+moves, Space toggles, and Enter launches only the checked programs. The first
+launch starts with nothing checked; later launches remember your last choices.
+Cancelling opens nothing.
+
+```bash
+desk                       # Choose installed programs to open
+desk open                  # Same launch picker
+desk open code brave       # Open only VS Code and Brave
+desk open claude           # Run Claude in this terminal
+desk open all              # Open every installed program
+desk open none             # Clear remembered launch choices
+```
+
+Launch choices are stored separately in `~/.config/desk/open-programs` (or under
+`XDG_CONFIG_HOME`). They do not change the installation selection. Uninstalled
+programs are hidden; an explicit request for an uninstalled program fails with
+an installation hint. Launching does not check for updates or download programs.
+On a fresh machine, `desk` points you to `desk install`.
+
+VS Code and Brave start independently of the launching shell. Selecting one AI
+tool runs it in the current terminal after any selected desktop apps start.
+Selecting both Codex and Claude opens each in a separate terminal window. This
+requires a graphical session and a terminal emulator such as GNOME Terminal,
+Konsole, Xfce Terminal, Kitty, Alacritty, or xterm. `TERMINAL` can name a preferred
+terminal executable (without extra shell flags). Launcher errors are recorded
+in `~/.config/desk/open-codex.log` and `open-claude.log`. If a graphical terminal
+is unavailable, open the AI tools separately with `desk ai` and `desk claude`.
+
+For noninteractive use, supply program names, e.g. `desk open code brave`.
+The argument-free launch picker requires an interactive terminal.
 
 ### VS Code
 
@@ -202,7 +234,7 @@ currently target Linux x86-64.
 
 Codex keeps the current terminal, standard input, signals, and exit status.
 Installation does not log you in or require an API key. Use Codex's normal
-sign-in flow after installation. Updates are managed with `desk p`; running
+sign-in flow after installation. Updates are managed with `desk update`; running
 Codex sessions postpone binary replacement.
 
 ### Claude Code
@@ -224,7 +256,7 @@ musl systems use Anthropic's matching musl package.
 Claude keeps your terminal, input, arguments, and exit status. Sign in using
 Claude's own startup flow. Desk leaves authentication, settings, and conversation
 history in their existing locations, including a custom `CLAUDE_CONFIG_DIR`.
-Updates are managed by `desk p`; the managed launcher disables Claude's separate
+Updates are managed by `desk update`; the managed launcher disables Claude's separate
 automatic updater to keep installation files in `goinfre`.
 
 ### Choose programs
@@ -237,11 +269,12 @@ desk install brave         # Browser only
 desk install codex claude   # Both terminal AI tools
 desk install all           # All four programs
 desk install none          # Disable automatic program preparation
-desk p                     # Prepare/update the saved selection
+desk p                     # Prepare/update the saved installation selection
+desk update                # Update all currently installed programs
 desk st                    # Show selection, installation state, and versions
 ```
 
-Choices are stored as plain names in `~/.config/desk/programs` (or under
+Installation choices are stored as plain names in `~/.config/desk/programs` (or under
 `XDG_CONFIG_HOME`). Selecting a different set does not uninstall or delete
 previous programs, profiles, or command wrappers. Explicit commands such as
 `desk b` still work for programs outside the saved selection; these commands
@@ -251,12 +284,13 @@ Existing installations retain VS Code and Brave until you choose differently.
 A fresh noninteractive `desk p` also uses these defaults. For unattended
 selection, pass names explicitly to `desk install`; the argument-free picker
 requires an interactive terminal and Python 3. Invalid choices and cancellation leave the
-saved selection unchanged.
+saved selection unchanged. Installation and updates never open programs;
+run `desk` afterward to choose what to launch.
 
 ### Automatic WebGL compatibility
 
-With Brave selected, run `desk` as usual to open your desktop applications. Brave keeps your existing
-accounts, history, bookmarks, extensions, and profile.
+Choose Brave in the `desk` launch picker, or run `desk b`. Brave keeps your
+existing accounts, history, bookmarks, extensions, and profile.
 
 On workstations with no accessible GPU render node under `/dev/dri/renderD*`,
 `desk` automatically adds `--ignore-gpu-blocklist` when starting Brave. This
@@ -279,7 +313,9 @@ extensions in your existing profile; `desk` does not reset your data.
 ## Commands
 
 ```text
-desk                 prepare selection + open selected desktop apps
+desk                 choose installed programs to open
+desk open [APPS]     choose/open installed programs
+desk update [APPS]   update installed programs when newer versions exist
 desk c [ARGS]        open VS Code
 desk b [ARGS]        open Brave
 desk ai [ARGS]       run Codex CLI in this terminal
@@ -341,19 +377,10 @@ desk b
 
 only prepares Brave if Brave is missing.
 
-Running:
-
-```bash
-desk
-```
-
-or:
-
-```bash
-desk p
-```
-
-prepares the saved selection.
+`desk p` prepares the saved installation selection. `desk` opens an installed-only
+launch picker; it does not prepare or update programs. The direct commands
+`desk c`, `desk b`, `desk ai`, and `desk claude` retain their prepare-on-demand
+behavior for the requested program.
 
 ## Background behavior
 
@@ -538,7 +565,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.5.0
+42-desk 2.6.0
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI
@@ -555,18 +582,11 @@ Example:
 
 Install/change programs: desk install
 Prepare/update selection: desk p
-```text
-desk 2.3.1
-
-  goinfre  /goinfre/anachat
-  ✓ setup  initialized
-  ✓ code   ready
-  ✓ brave  ready
-
-  code   /home/anachat/.local/bin/code
-  brave  /home/anachat/.local/bin/brave
-  log    ~/.config/desk/last-run.log
+Open installed programs: desk   |   Update installed programs: desk update
 ```
+
+`SELECTED` describes the installation preference. Launch choices are independent,
+and `desk update` checks all installed programs regardless of this preference.
 
 ## Test a fresh installation
 
@@ -591,7 +611,7 @@ desk clean
 - removes first-run and update state
 - keeps `desk` itself installed
 - keeps the shell hook installed
-- keeps the selected programs
+- keeps installation and launch preferences
 - keeps Codex and Claude credentials, configuration, and sessions
 
 After the clean succeeds:
@@ -638,10 +658,27 @@ source ~/.zshrc
 ## Update applications
 
 ```bash
-desk p
+desk update                 # Check/update all installed programs
+desk update claude          # Update only Claude Code
+desk update code brave      # Update only the editor and browser
+desk update all             # Same as desk update
+desk up codex               # Short alias
 ```
 
-Running applications are not replaced while they are open.
+Updates check the vendor's latest stable release and download only a newer
+version. Current versions are kept without another download; locally newer
+versions are not downgraded. Running applications postpone replacement: close
+them and rerun the suggested update command. Network failures keep an existing
+installation where possible; checksum or installation failures are reported.
+
+Only desk-managed installed programs are considered. `desk update` never
+installs a missing program, imports profiles, changes either saved selection,
+or opens applications. An explicit missing target is rejected before any
+updates start. A failure for one program does not prevent checking the others.
+
+`desk p` remains the prepare/update command for the saved installation selection;
+it can install missing selected programs. Background maintenance also follows
+that saved installation selection.
 
 ## Logs
 
@@ -687,9 +724,10 @@ No root access is required.
 ## Repository
 
 CLI regression checks (no desktop session, network, or application download required).
-They cover checkbox keyboard controls and terminal restoration, saved selections,
-native installation integrity, repeat setup, cache routing, terminal argument/input/exit
-handling, and Brave launch behavior:
+They cover installation and launch checkboxes, terminal restoration, separate
+saved preferences, installed-only updates, current/newer version handling,
+installation integrity, cache routing, terminal argument/input/exit handling,
+and Brave launch behavior:
 
 ```bash
 bash -n desk install.sh

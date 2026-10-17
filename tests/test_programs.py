@@ -293,18 +293,18 @@ main p
         self.assertEqual((self.state / "programs").read_text(), "code\nbrave\n")
         self.assertEqual((self.root / "prepared").read_text(), "code\nbrave\n")
 
-    def test_plain_run_opens_only_selected_desktop_apps(self):
-        self.save_selection("brave\ncodex\n")
+    def test_explicit_open_starts_only_requested_programs(self):
+        self.save_selection("code\n")
+        self.write_executable(self.storage / "apps/brave/brave", "#!/bin/sh\nexit 0\n")
+        self.write_executable(self.codex, "#!/bin/sh\nexit 0\n")
         self.source('''
-setup_runtime
-pgrep() { return 1; }
-setsid() { printf '%s\\n' "$*" >> "$DESK_FIXTURE/opened"; }
-launch_apps
+open_app() { printf '%s\\n' "$1" >> "$DESK_FIXTURE/opened"; }
+main open brave codex
 ''')
-        opened = (self.root / "opened").read_text()
-        self.assertIn("desk brave", opened)
-        self.assertNotIn("desk code", opened)
-        self.assertNotIn("desk codex", opened)
+        self.assertEqual((self.root / "opened").read_text(), "brave\ncodex\n")
+        self.assertEqual((self.state / "programs").read_text(), "code\n")
+        self.assertEqual((self.state / "open-programs").read_text(), "brave\ncodex\n")
+        self.assertFalse((self.root / "requests").exists())
 
     def test_noninteractive_chooser_requires_explicit_programs(self):
         result = self.run_desk("install", check=False)
@@ -347,8 +347,9 @@ launch_apps
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
         before = termios.tcgetattr(slave)
+        args = [] if command is None else ([command] if isinstance(command, str) else list(command))
         process = subprocess.Popen(
-            [str(DESK), command], stdin=slave, stdout=slave, stderr=slave,
+            [str(DESK), *args], stdin=slave, stdout=slave, stderr=slave,
             env=self.env, start_new_session=True,
             preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0),
         )
@@ -561,6 +562,211 @@ printf '%s\\n' "${PROGRAMS[@]}" > "$DESK_FIXTURE/all-programs"
         finally:
             process.terminate()
             process.wait(timeout=5)
+
+    def install_recording_desktop(self, program):
+        relative = {"code": "vscode/bin/code", "brave": "brave/brave"}[program]
+        self.write_executable(self.storage / "apps" / relative, f'''#!/usr/bin/env python3
+import os
+from pathlib import Path
+with (Path(os.environ['DESK_FIXTURE']) / 'opened').open('a') as record:
+    record.write({program!r} + '\\n')
+''')
+
+    def install_old_native(self, program, version="0.9.0"):
+        binary = self.codex if program == "codex" else self.claude
+        self.write_executable(binary, "#!/bin/sh\necho existing native fixture\n")
+        root = binary.parent.parent if program == "codex" else binary.parent
+        (root / ".installed-version").write_text(version + "\n")
+        return root / ".installed-version"
+
+    def test_plain_desk_on_fresh_machine_does_not_install_or_launch_anything(self):
+        result = self.run_desk()
+        self.assertIn("No managed programs installed", result.stdout)
+        self.assertFalse((self.root / "requests").exists())
+        self.assertFalse((self.state / "programs").exists())
+
+    def test_plain_desk_shows_only_installed_programs_and_opens_checked_item(self):
+        self.install_recording_desktop("brave")
+        self.save_selection("claude\n")
+        code, output = self.interact(None, [b" \r"])
+        self.assertEqual(code, 0, output.decode())
+        self.assertIn(b"Choose programs to open", output)
+        self.assertIn(b"[x] Brave", output)
+        self.assertNotIn(b"[ ] VS Code", output)
+        self.assertNotIn(b"[ ] Claude Code", output)
+        self.assertEqual((self.root / "opened").read_text(), "brave\n")
+        self.assertEqual((self.state / "programs").read_text(), "claude\n")
+        self.assertEqual((self.state / "open-programs").read_text(), "brave\n")
+        self.assertFalse((self.root / "requests").exists())
+
+    def test_open_choices_are_remembered_independently_of_install_choices(self):
+        self.install_recording_desktop("brave")
+        self.install_recording_desktop("code")
+        self.save_selection("claude\n")
+        (self.state / "open-programs").write_text("code\n")
+        code, output = self.interact("open", [b"\r"])
+        self.assertEqual(code, 0, output.decode())
+        self.assertIn(b"[x] VS Code", output)
+        self.assertIn(b"[ ] Brave", output)
+        self.assertEqual((self.root / "opened").read_text(), "code\n")
+        self.assertEqual((self.state / "programs").read_text(), "claude\n")
+
+    def test_cancelling_launch_picker_opens_nothing_and_keeps_preferences(self):
+        self.install_recording_desktop("brave")
+        self.save_selection("none\n")
+        (self.state / "open-programs").write_text("brave\n")
+        code, output = self.interact(None, [b"q"])
+        self.assertEqual(code, 130, output.decode())
+        self.assertFalse((self.root / "opened").exists())
+        self.assertEqual((self.state / "open-programs").read_text(), "brave\n")
+        self.assertEqual((self.state / "programs").read_text(), "none\n")
+
+    def test_open_validates_the_whole_request_before_starting_anything(self):
+        self.install_recording_desktop("brave")
+        result = self.run_desk("open", "brave", "code", check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("not installed", result.stderr)
+        self.assertFalse((self.root / "opened").exists())
+        self.assertFalse((self.state / "open-programs").exists())
+        self.assertFalse((self.root / "requests").exists())
+
+    def test_open_does_not_check_for_updates_and_returns_single_ai_exit_status(self):
+        self.run_desk("install", "codex")
+        (self.codex.parent.parent / ".installed-version").write_text("0.9.0\n")
+        before = (self.root / "requests").read_text()
+        self.env["DESK_TEST_EXIT"] = "23"
+        result = self.run_desk("open", "codex", input="hello\n", check=False)
+        self.assertEqual(result.returncode, 23, result.stderr)
+        self.assertEqual((self.root / "requests").read_text(), before)
+        self.assertEqual(json.loads((self.root / "launch.json").read_text())["stdin"], "hello\n")
+
+    def test_opening_both_ai_tools_without_a_graphical_terminal_fails_before_launch(self):
+        self.run_desk("install", "codex", "claude")
+        self.env.pop("DISPLAY", None)
+        self.env.pop("WAYLAND_DISPLAY", None)
+        result = self.run_desk("open", "all", check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Opening both AI tools needs", result.stderr)
+        self.assertFalse((self.root / "launch.json").exists())
+        self.assertFalse((self.state / "open-programs").exists())
+
+    def test_two_ai_tools_are_launched_in_separate_terminal_windows(self):
+        self.run_desk("install", "codex", "claude")
+        terminal = self.root / "terminal with spaces/gnome-terminal"
+        self.write_executable(terminal, '''#!/usr/bin/env python3
+import json,os,sys
+from pathlib import Path
+root = Path(os.environ['DESK_FIXTURE'])
+(root / ('terminal-' + sys.argv[-1] + '.json')).write_text(json.dumps(sys.argv[1:]))
+''')
+        self.env.update(TERMINAL=str(terminal), DISPLAY=":99")
+        self.run_desk("open", "codex", "claude")
+        for program in ("codex", "claude"):
+            record = self.root / ("terminal-" + program + ".json")
+            deadline = time.monotonic() + 3
+            while not record.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(json.loads(record.read_text()), [
+                "--", str(self.home / ".local/bin/desk"), "_open", program,
+            ])
+        self.assertFalse((self.root / "launch.json").exists())
+
+    def test_noninteractive_plain_desk_requires_explicit_launch_choices(self):
+        self.install_recording_desktop("brave")
+        result = self.run_desk(check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("desk open", result.stderr)
+        self.assertFalse((self.root / "opened").exists())
+
+    def test_install_does_not_launch_installed_programs(self):
+        self.run_desk("install", "codex", "claude")
+        self.assertFalse((self.root / "launch.json").exists())
+        self.assertFalse((self.state / "open-programs").exists())
+
+    def test_update_checks_all_installed_programs_outside_the_install_selection(self):
+        codex_marker = self.install_old_native("codex")
+        claude_marker = self.install_old_native("claude")
+        self.save_selection("none\n")
+        (self.state / "open-programs").write_text("claude\n")
+        self.run_desk("update")
+        self.assertEqual(codex_marker.read_text(), "1.2.3\n")
+        self.assertEqual(claude_marker.read_text(), "2.3.4\n")
+        self.assertEqual((self.state / "programs").read_text(), "none\n")
+        self.assertEqual((self.state / "open-programs").read_text(), "claude\n")
+        self.assertFalse((self.root / "launch.json").exists())
+        self.assertFalse((self.storage / "apps/vscode").exists())
+
+    def test_update_can_target_one_program_without_changing_others(self):
+        codex_marker = self.install_old_native("codex")
+        claude_marker = self.install_old_native("claude")
+        self.run_desk("update", "claude")
+        self.assertEqual(codex_marker.read_text(), "0.9.0\n")
+        self.assertEqual(claude_marker.read_text(), "2.3.4\n")
+        self.assertNotIn("@openai", (self.root / "requests").read_text())
+
+    def test_update_rejects_uninstalled_programs_without_downloading(self):
+        self.install_old_native("claude")
+        result = self.run_desk("update", "claude", "codex", check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("not installed", result.stderr)
+        self.assertFalse((self.root / "requests").exists())
+        self.assertFalse(self.codex.exists())
+
+    def test_update_on_a_fresh_machine_installs_nothing(self):
+        result = self.run_desk("update")
+        self.assertIn("No installed programs selected", result.stdout)
+        self.assertFalse((self.root / "requests").exists())
+        self.assertFalse((self.state / "programs").exists())
+
+    def test_update_does_not_redownload_current_or_downgrade_newer_versions(self):
+        self.install_old_native("codex", "1.2.3")
+        claude_marker = self.install_old_native("claude", "99.0.0")
+        self.run_desk("update", "all")
+        requests = (self.root / "requests").read_text().splitlines()
+        self.assertEqual(len(requests), 2)
+        self.assertTrue(all(url.endswith("/latest") for url in requests))
+        self.assertEqual(claude_marker.read_text(), "99.0.0\n")
+
+    def test_failed_update_preserves_old_program_and_continues_other_updates(self):
+        codex_marker = self.install_old_native("codex")
+        claude_marker = self.install_old_native("claude")
+        self.platform["dist"]["integrity"] = "sha512-" + base64.b64encode(bytes(64)).decode()
+        self.write_platform()
+        result = self.run_desk("update", check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(codex_marker.read_text(), "0.9.0\n")
+        self.assertEqual(claude_marker.read_text(), "2.3.4\n")
+        self.assertFalse((self.root / "launch.json").exists())
+
+    def test_update_checks_desktop_binaries_without_importing_profiles(self):
+        self.install_recording_desktop("code")
+        self.install_recording_desktop("brave")
+        self.source('''
+install_vscode() { echo code >> "$DESK_FIXTURE/updated"; }
+install_brave() { echo brave >> "$DESK_FIXTURE/updated"; }
+import_data() { echo unexpected-import >> "$DESK_FIXTURE/updated"; return 1; }
+main update
+''')
+        self.assertEqual((self.root / "updated").read_text(), "code\nbrave\n")
+        self.assertFalse((self.root / "opened").exists())
+        self.assertFalse((self.state / "programs").exists())
+
+    def test_internal_terminal_launch_does_not_install_a_removed_program(self):
+        result = self.run_desk("_open", "claude", check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not installed", result.stderr)
+        self.assertFalse((self.root / "requests").exists())
+
+    def test_launch_picker_forgets_uninstalled_choices_without_installing_them(self):
+        self.install_recording_desktop("brave")
+        self.state.mkdir(parents=True)
+        (self.state / "open-programs").write_text("claude\n")
+        code, output = self.interact(None, [b"\r"])
+        self.assertEqual(code, 0, output.decode())
+        self.assertIn(b"[ ] Brave", output)
+        self.assertEqual((self.state / "open-programs").read_text(), "none\n")
+        self.assertFalse((self.root / "opened").exists())
+        self.assertFalse((self.root / "requests").exists())
 
 
 if __name__ == "__main__":

@@ -75,7 +75,9 @@ printf '\n'
 printf 'Choose VS Code, Brave, Codex CLI, Claude Code, or any combination.\n'
 printf 'New installations show a checkbox picker in your next terminal.\n\n'
 printf 'Open the picker now: ~/.local/bin/desk install\n'
-printf 'Without prompts: ~/.local/bin/desk install codex claude\n\n'
+printf 'Without prompts: ~/.local/bin/desk install codex claude\n'
+printf 'After installation, choose what to open: ~/.local/bin/desk\n'
+printf 'Update installed programs: ~/.local/bin/desk update\n\n'
 
 
 case "$(basename "${SHELL:-}")" in

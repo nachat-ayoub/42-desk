@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.5.0"
+VERSION="2.6.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -39,9 +39,11 @@ STAMP="$STATE_DIR/auto-check"
 INITIALIZED="$STATE_DIR/initialized"
 LOG_FILE="$STATE_DIR/last-run.log"
 PROGRAMS_FILE="$STATE_DIR/programs"
+OPEN_PROGRAMS_FILE="$STATE_DIR/open-programs"
 # Existing installations keep their original two-program selection.
 PROGRAMS=(code brave)
 ALL_PROGRAMS=(code brave codex claude)
+PICKER_PROGRAMS=("${ALL_PROGRAMS[@]}")
 
 AUTO_CHECK_SECONDS=$((12 * 60 * 60))
 LOCK_WAIT_SECONDS=60
@@ -207,8 +209,10 @@ usage() {
 
   printf '%bUsage%b\n' "$C_BOLD" "$C_RESET"
 
-  printf '  desk                 prepare selection + open selected desktop apps\n'
+  printf '  desk                 choose installed programs to open\n'
+  printf '  desk open [APPS]     choose/open installed programs\n'
   printf '  desk install [APPS]  choose programs, save selection, and install\n'
+  printf '  desk update [APPS]   update installed programs when newer versions exist\n'
   printf '  desk c [ARGS]        open VS Code\n'
   printf '  desk b [ARGS]        open Brave\n'
   printf '  desk ai [ARGS]       run Codex CLI in this terminal\n'
@@ -282,26 +286,39 @@ normalize_programs() {
 
 
 load_programs() {
+  load_programs_from "$PROGRAMS_FILE"
+}
+
+
+load_programs_from() {
+  local file=$1
   local -a saved=()
-  [ -f "$PROGRAMS_FILE" ] || return 0
-  mapfile -t saved < "$PROGRAMS_FILE"
+  [ -f "$file" ] || return 0
+  mapfile -t saved < "$file"
   normalize_programs "${saved[@]}"
 }
 
 
-save_programs() {
+save_programs_to() {
+  local file=$1
   local tmp
-  tmp=$(mktemp "$STATE_DIR/programs.XXXXXX") || return 1
+  tmp=$(mktemp "$file.XXXXXX") || return 1
   if ! {
     if [ "${#PROGRAMS[@]}" = 0 ]; then
       printf 'none\n'
     else
       printf '%s\n' "${PROGRAMS[@]}"
-    fi > "$tmp" && mv "$tmp" "$PROGRAMS_FILE"
+    fi > "$tmp" && mv "$tmp" "$file"
   }; then
     rm -f "$tmp"
     return 1
   fi
+  return 0
+}
+
+
+save_programs() {
+  save_programs_to "$PROGRAMS_FILE" || return 1
   rm -f "$STAMP"
 }
 
@@ -323,7 +340,8 @@ selection_summary() {
 # The picker owns /dev/tty, leaving stdout for the confirmed selection.
 # Python restores terminal attributes and cursor visibility on every exit.
 checkbox_programs() {
-  python3 - "${PROGRAMS[@]}" <<'PICKER'
+  python3 - "${PICKER_TITLE:-Choose your programs}" "${PICKER_ACTION:-install}" \
+    "${PICKER_PROGRAMS[@]}" -- "${PROGRAMS[@]}" <<'PICKER'
 import os
 import select
 import signal
@@ -331,9 +349,11 @@ import sys
 import termios
 import tty
 
-programs = [("code", "VS Code"), ("brave", "Brave"),
-            ("codex", "Codex CLI"), ("claude", "Claude Code")]
-chosen = set(sys.argv[1:])
+title, action = sys.argv[1:3]
+separator = sys.argv.index("--", 3)
+labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code"}
+programs = [(name, labels[name]) for name in sys.argv[3:separator]]
+chosen = set(sys.argv[separator + 1:]).intersection(name for name, _ in programs)
 current = 0
 fd = None
 previous = None
@@ -354,16 +374,16 @@ def render():
         width, height = max(size.columns or 80, 20), size.lines or 24
     except OSError:
         width, height = 80, 24
-    lines = ["Choose your programs", ""]
+    lines = [title, ""]
     visible = list(enumerate(programs))
     if 0 < height < 10:
         visible = [(current, programs[current])]
-    for index, (name, title) in visible:
+    for index, (name, program_title) in visible:
         pointer = ">" if index == current else " "
         mark = "x" if name in chosen else " "
-        lines.append(f" {pointer} [{mark}] {title}")
+        lines.append(f" {pointer} [{mark}] {program_title}")
     lines += ["", "Up/Down or j/k: move   Space: toggle",
-              "Enter: install   a: all   n: none   Esc/q: cancel"]
+              f"Enter: {action}   a: all   n: none   Esc/q: cancel"]
     write("\x1b[H\x1b[2J" + "\r\n".join(line[:width - 1] for line in lines))
 
 
@@ -405,7 +425,7 @@ try:
 except KeyboardInterrupt:
     pass
 except (OSError, termios.error) as error:
-    print(f"Cannot open interactive checklist: {error}. Use desk install PROGRAMS.", file=sys.stderr)
+    print(f"Cannot open interactive checklist: {error}. Use desk {action} PROGRAMS.", file=sys.stderr)
     result = 2
 finally:
     if previous is not None:
@@ -423,15 +443,15 @@ PICKER
 }
 
 
-choose_programs() {
+choose_program_list() {
   local answer rc
   if [ "$#" = 0 ]; then
     if [ ! -t 0 ]; then
-      fail "Specify programs, e.g. desk install codex claude (or 'all' / 'none')."
+      fail "Specify programs, e.g. desk ${PICKER_COMMAND:-install} codex claude (or 'all' / 'none')."
       return 2
     fi
     if ! command -v python3 >/dev/null 2>&1; then
-      fail 'The checklist requires python3. Use desk install PROGRAMS instead.'
+      fail "The checklist requires python3. Use desk ${PICKER_COMMAND:-install} PROGRAMS instead."
       return 2
     fi
     if answer=$(checkbox_programs); then
@@ -444,6 +464,11 @@ choose_programs() {
   else
     normalize_programs "$@" || return $?
   fi
+}
+
+
+choose_programs() {
+  choose_program_list "$@" || return $?
   with_lock_wait core save_programs || return 1
   info "Selected: $(selection_summary)"
 }
@@ -465,6 +490,7 @@ show_next_steps() {
   selected brave && printf '  Brave      brave [URL]\n'
   selected codex && printf '  Codex CLI  codex   (sign in on first use)\n'
   selected claude && printf '  Claude     claude  (sign in on first use)\n'
+  printf '\nOpen programs: desk   |   Update installed programs: desk update\n'
   printf '\nChange programs anytime: desk install\n'
 }
 
@@ -890,6 +916,21 @@ first_run() {
 # Install applications
 # -------------------------------------------------------------------
 
+version_is_newer() {
+  [ "$1" != "$2" ] &&
+    [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
+}
+
+
+retry_program_command() {
+  if [ "${UPDATE_ONLY:-0}" = 1 ]; then
+    printf 'desk update %s' "${1/vscode/code}"
+  else
+    printf 'desk p'
+  fi
+}
+
+
 ensure_app() {
   local name=$1
   local latest=$2
@@ -924,11 +965,16 @@ ensure_app() {
     return 0
   fi
 
+  if [ "${UPDATE_ONLY:-0}" = 1 ] && [ -n "$have" ] && ! version_is_newer "$latest" "$have"; then
+    ok "$(label "$name") $have (newer than latest stable $latest; keeping installed version)"
+    return 0
+  fi
+
   if [ -n "$have" ] &&
      pgrep -f "$dest/" >/dev/null 2>&1
   then
     warn \
-      "$(label "$name") $latest available; close it and run 'desk p'"
+      "$(label "$name") $latest available; close it and run '$(retry_program_command "$name")'"
 
     return 0
   fi
@@ -1139,7 +1185,7 @@ native_cli_offline() {
     warn "$(label "$1"): update server unavailable; keeping the installed version."
     return 0
   fi
-  fail "$(label "$1"): could not read package metadata. Check registry.npmjs.org access and run 'desk p'."
+  fail "$(label "$1"): could not read package metadata. Check registry.npmjs.org access and run '$(retry_program_command "$1")'."
   return 1
 }
 
@@ -1171,12 +1217,12 @@ PY
 install_native_cli() {
   local name=$1
   local arch target meta details latest package_version package_url url integrity tmp tool
-  local source entry root_package platform
+  local source entry root_package platform have
   local dest="$APPS/$name"
   local -a fields=()
   for tool in curl python3 tar; do
     if ! command -v "$tool" >/dev/null 2>&1; then
-      fail "$(label "$name") installation requires $tool. Install it, then run 'desk p'."
+      fail "$(label "$name") installation requires $tool. Install it, then run '$(retry_program_command "$name")'."
       return 1
     fi
   done
@@ -1242,12 +1288,17 @@ except (ValueError, KeyError, TypeError) as error:
   latest=${fields[0]}
   package_version=${fields[1]}
   package_url=${fields[2]}
-  if native_cli_ready "$name" && [ "$(cat "$dest/.installed-version" 2>/dev/null || true)" = "$latest" ]; then
+  have=$(cat "$dest/.installed-version" 2>/dev/null || true)
+  if native_cli_ready "$name" && [ "$have" = "$latest" ]; then
     ok "$(label "$name") $latest"
     return 0
   fi
+  if [ "${UPDATE_ONLY:-0}" = 1 ] && [ -n "$have" ] && ! version_is_newer "$latest" "$have"; then
+    ok "$(label "$name") $have (newer than latest stable $latest; keeping installed version)"
+    return 0
+  fi
   if native_cli_running "$name"; then
-    warn "$(label "$name") $latest available; exit $(label "$name") and run 'desk p'."
+    warn "$(label "$name") $latest available; exit $(label "$name") and run '$(retry_program_command "$name")'."
     return 0
   fi
   if ! meta=$(curl -fsSL --max-time 15 "$package_url"); then
@@ -1290,7 +1341,7 @@ except (ValueError, KeyError, TypeError) as error:
     printf '%s\n' "$latest" > "$tmp/x/$source/.installed-version"
   }; then
     rm -rf "$tmp"
-    fail "$(label "$name") installation failed; existing installation kept. Run 'desk p' to retry."
+    fail "$(label "$name") installation failed; existing installation kept. Run '$(retry_program_command "$name")' to retry."
     return 1
   fi
   if native_cli_running "$name"; then
@@ -2018,11 +2069,98 @@ prepare_all() {
 # App launching
 # -------------------------------------------------------------------
 
+program_executable() {
+  case "$1" in
+    code) printf '%s/vscode/bin/code\n' "$APPS" ;;
+    brave) printf '%s/brave/brave\n' "$APPS" ;;
+    codex|claude) native_cli_path "$1" ;;
+    *) return 2 ;;
+  esac
+}
+
+
+program_installed() {
+  local executable
+  executable=$(program_executable "$1") || return $?
+  [ -x "$executable" ]
+}
+
+
+program_ready() {
+  case "$1" in
+    code) vscode_ready ;;
+    brave) brave_ready ;;
+    codex|claude) native_cli_ready "$1" ;;
+    *) return 2 ;;
+  esac
+}
+
+
+installed_programs() {
+  local program
+  for program in "${ALL_PROGRAMS[@]}"; do
+    if program_installed "$program"; then printf '%s\n' "$program"; fi
+  done
+  return 0
+}
+
+
+update_installed_programs() {
+  local -a PROGRAMS=() available=()
+  local UPDATE_ONLY=1
+  local program number=0 failed=0
+  mapfile -t available < <(installed_programs)
+  if [ "$#" = 0 ] || { [ "$#" = 1 ] && [ "$1" = all ]; }; then
+    PROGRAMS=("${available[@]}")
+  else
+    normalize_programs "$@" || return $?
+  fi
+  for program in "${PROGRAMS[@]}"; do
+    if ! program_installed "$program"; then
+      fail "$(label "$program") is not installed. Use 'desk install $program' first."
+      return 2
+    fi
+  done
+  if [ "${#PROGRAMS[@]}" = 0 ]; then
+    info "No installed programs selected for update. Install programs with 'desk install'."
+    return 0
+  fi
+  with_lock_wait core install_self || return 1
+  info "Checking installed programs: $(selection_summary)"
+  for program in "${PROGRAMS[@]}"; do
+    number=$((number + 1))
+    info "[$number/${#PROGRAMS[@]}] $(label "$program")"
+    case "$program" in
+      code) with_lock_wait code install_vscode || failed=1 ;;
+      brave) with_lock_wait brave install_brave || failed=1 ;;
+      codex) with_lock_wait codex install_codex || failed=1 ;;
+      claude) with_lock_wait claude install_claude || failed=1 ;;
+    esac
+  done
+  if [ "$failed" = 0 ]; then
+    ok "Update check complete. No programs opened."
+  else
+    fail "Some update checks failed. Retry with 'desk update'."
+  fi
+  return "$failed"
+}
+
+
+start_detached_process() {
+  if command -v setsid >/dev/null 2>&1; then
+    exec setsid "$@"
+  else
+    trap '' HUP
+    exec "$@"
+  fi
+}
+
+
 launch_vscode_unlocked() {
   local node_bin
   local cmd_pid
 
-  if ! vscode_ready; then
+  if ! vscode_ready && [ "${PREPARE_ON_LAUNCH:-1}" = 1 ]; then
     prepare_vscode_unlocked || true
   fi
 
@@ -2035,9 +2173,9 @@ launch_vscode_unlocked() {
   node_bin=$(find_node_bin)
   export PATH="$BIN_DIR${node_bin:+:$node_bin}:$PATH"
 
-  "$APPS/vscode/bin/code" \
+  start_detached_process "$APPS/vscode/bin/code" \
     --extensions-dir "$VSCODE_EXTENSIONS" \
-    "$@" &
+    "$@" </dev/null &
 
   cmd_pid=$!
 
@@ -2070,7 +2208,7 @@ launch_brave_unlocked() {
   local cmd_pid
   local -a gpu_args=()
 
-  if ! brave_ready; then
+  if ! brave_ready && [ "${PREPARE_ON_LAUNCH:-1}" = 1 ]; then
     prepare_brave_unlocked || true
   fi
 
@@ -2087,11 +2225,11 @@ launch_brave_unlocked() {
     gpu_args=(--ignore-gpu-blocklist)
   fi
 
-  "$APPS/brave/brave" \
+  start_detached_process "$APPS/brave/brave" \
     --class="$BRAVE_WM_CLASS" \
     --disk-cache-size="$BRAVE_CACHE_BYTES" \
     "${gpu_args[@]}" \
-    "$@" &
+    "$@" </dev/null &
 
   cmd_pid=$!
 
@@ -2125,6 +2263,8 @@ open_app() {
     claude)
       launch_claude "$@"
       ;;
+
+    *) fail "Unknown program: $name"; return 2 ;;
   esac
 }
 
@@ -2132,6 +2272,10 @@ open_app() {
 launch_codex() {
   with_lock_wait core install_self || return 1
   if ! codex_ready; then
+    if [ "${PREPARE_ON_LAUNCH:-1}" != 1 ]; then
+      fail "Codex CLI is not installed. Use 'desk install codex'."
+      return 1
+    fi
     with_lock_wait codex prepare_codex_unlocked || return 1
   fi
   local cache="$GOINFRE/cache/codex"
@@ -2160,6 +2304,10 @@ launch_codex() {
 launch_claude() {
   with_lock_wait core install_self || return 1
   if ! claude_ready; then
+    if [ "${PREPARE_ON_LAUNCH:-1}" != 1 ]; then
+      fail "Claude Code is not installed. Use 'desk install claude'."
+      return 1
+    fi
     with_lock_wait claude prepare_claude_unlocked || return 1
   fi
   local cache="$GOINFRE/cache/claude"
@@ -2175,34 +2323,99 @@ launch_claude() {
 }
 
 
-launch_apps() {
-  if selected code && ! pgrep \
-    -f "$APPS/vscode/" \
-    >/dev/null 2>&1
-  then
+find_launch_terminal() {
+  local candidate path
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 1
+  for candidate in "${TERMINAL:-}" gnome-terminal kgx konsole xfce4-terminal mate-terminal kitty alacritty x-terminal-emulator xterm; do
+    [ -n "$candidate" ] || continue
+    path=$(command -v "$candidate" 2>/dev/null) || continue
+    case "$(basename "$path")" in
+      gnome-terminal|kgx|mate-terminal|kitty) TERMINAL_COMMAND=("$path" --) ;;
+      xfce4-terminal) TERMINAL_COMMAND=("$path" --disable-server --execute) ;;
+      *) TERMINAL_COMMAND=("$path" -e) ;;
+    esac
+    return 0
+  done
+  return 1
+}
 
-    info "Opening VS Code"
 
-    setsid \
-      -f \
-      "$BIN_DIR/desk" \
-      code \
-      >/dev/null 2>&1
+open_ai_terminal() {
+  local program=$1
+  local log="$STATE_DIR/open-$program.log"
+  info "Opening $(label "$program") in a new terminal (log: $(pretty "$log"))"
+  start_detached_process "${TERMINAL_COMMAND[@]}" "$BIN_DIR/desk" _open "$program" </dev/null >"$log" 2>&1 &
+}
+
+
+open_programs() {
+  local -a PROGRAMS=() available=() preselected=() TERMINAL_COMMAND=()
+  local -a PICKER_PROGRAMS=()
+  local PICKER_TITLE='Choose programs to open' PICKER_ACTION=open PICKER_COMMAND=open
+  local PREPARE_ON_LAUNCH=0
+  local program ai_count=0 failed=0
+  mapfile -t available < <(installed_programs)
+  if [ "${#available[@]}" = 0 ] && [ "$#" = 0 ]; then
+    info "No managed programs installed. Use 'desk install' first."
+    return 0
   fi
-
-  if selected brave && ! pgrep \
-    -f "$APPS/brave/" \
-    >/dev/null 2>&1
-  then
-
-    info "Opening Brave"
-
-    setsid \
-      -f \
-      "$BIN_DIR/desk" \
-      brave \
-      >/dev/null 2>&1
+  if [ "$#" = 0 ]; then
+    load_programs_from "$OPEN_PROGRAMS_FILE" || return $?
+    for program in "${available[@]}"; do
+      if selected "$program"; then preselected+=("$program"); fi
+    done
+    PROGRAMS=("${preselected[@]}")
+    PICKER_PROGRAMS=("${available[@]}")
+    choose_program_list || return $?
+  elif [ "$#" = 1 ] && [ "$1" = all ]; then
+    PROGRAMS=("${available[@]}")
+  else
+    normalize_programs "$@" || return $?
   fi
+  # Validate the entire request before opening any program or saving choices.
+  for program in "${PROGRAMS[@]}"; do
+    if ! program_installed "$program"; then
+      fail "$(label "$program") is not installed. Use 'desk install $program' first."
+      return 2
+    fi
+    if ! program_ready "$program"; then
+      fail "$(label "$program") needs setup. Run 'desk $program' to finish setup first."
+      return 1
+    fi
+    case "$program" in codex|claude) ai_count=$((ai_count + 1)) ;; esac
+  done
+  if [ "$ai_count" -gt 1 ] && ! find_launch_terminal; then
+    fail 'Opening both AI tools needs a graphical session and a terminal emulator.'
+    printf "Open one at a time instead: desk ai  or  desk claude\n" >&2
+    return 1
+  fi
+  with_lock_wait core save_programs_to "$OPEN_PROGRAMS_FILE" || return 1
+  if [ "${#PROGRAMS[@]}" = 0 ]; then
+    info 'No programs selected to open.'
+    return 0
+  fi
+  with_lock_wait core install_self || return 1
+  info "Opening: $(selection_summary)"
+  # Start desktop apps first, before a single AI tool takes over this terminal.
+  for program in "${PROGRAMS[@]}"; do
+    case "$program" in
+      code|brave) open_app "$program" || failed=1 ;;
+    esac
+  done
+  [ "$failed" = 0 ] || return "$failed"
+  for program in "${PROGRAMS[@]}"; do
+    case "$program" in
+      codex|claude)
+        if [ "$ai_count" = 1 ]; then
+          open_app "$program"
+          return $?
+        else
+          open_ai_terminal "$program" || failed=1
+        fi
+        ;;
+    esac
+  done
+  return "$failed"
 }
 
 
@@ -2694,6 +2907,7 @@ show_status() {
   printf '  Claude cache %s\n' "$(pretty "$GOINFRE/cache/claude")"
   printf '\nInstall/change programs: desk install\n'
   printf 'Prepare/update selection: desk p\n'
+  printf 'Open installed programs: desk   |   Update installed programs: desk update\n'
 }
 
 
@@ -2766,23 +2980,18 @@ main() {
   setup_runtime || return $?
 
   case "$cmd" in
-    run)
+    run|open)
+      open_programs "$@"
+      ;;
 
-      if prepare_all; then
+    update|up)
+      update_installed_programs "$@"
+      ;;
 
-        touch "$INITIALIZED"
-        touch "$STAMP"
-
-        launch_apps
-
-        ok "Selected programs ready"
-        show_next_steps
-
-      else
-
-        warn "Finished with warnings"
-        exit 1
-      fi
+    _open)
+      local PREPARE_ON_LAUNCH=0
+      [ "$#" -gt 0 ] || return 2
+      open_app "$@"
       ;;
 
 
@@ -2822,7 +3031,7 @@ main() {
       ;;
 
 
-    p|prep|prepare|update|up)
+    p|prep|prepare)
 
       if prepare_all; then
 

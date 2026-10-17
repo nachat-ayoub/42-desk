@@ -118,8 +118,8 @@ class BraveWebGLTests(unittest.TestCase):
         args = self.launch("--", "--user-data-dir=literal")
         self.assertEqual(args[-2:], ["--", "--user-data-dir=literal"])
 
-    def test_plain_desk_opens_both_apps_with_usual_brave_profile(self):
-        args = self.launch(command="run")
+    def test_explicit_open_preserves_both_apps_usual_profiles(self):
+        args = self.launch("code", "brave", command="open")
         code_record = self.root / "code-arguments.json"
         deadline = time.monotonic() + 5
         while not code_record.exists() and time.monotonic() < deadline:
