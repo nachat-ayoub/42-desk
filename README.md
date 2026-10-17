@@ -1,13 +1,14 @@
 # 42-desk
 
-**Get any 42 / 1337 Linux workstation ready to work in seconds.**
+**Choose your tools. Prepare your 42 / 1337 Linux workstation without sudo.**
 
 `42-desk` is a small no-sudo workstation bootstrapper designed for shared
 42 / 1337 Linux machines.
 
-It installs native VS Code and Brave inside `goinfre`, migrates your existing
-profiles, creates normal `code` and `brave` commands, and automatically checks
-your workstation when you open a shell.
+It installs your choice of native **VS Code, Brave, and Codex CLI** inside
+`goinfre`. It migrates existing editor/browser profiles, creates familiar
+`code`, `brave`, and `codex` commands for the selected programs, and checks
+for updates when you open a shell.
 
 ## Features
 
@@ -15,11 +16,15 @@ your workstation when you open a shell.
 - Uses `goinfre`
 - Native VS Code
 - Native Brave
+- Native Codex CLI (no Node.js/npm required)
+- Interactive program chooser and saved selections
+- Codex cache, logs, and temporary files in `goinfre`
 - VS Code profile migration
 - Brave profile migration
 - VS Code extension support
 - `code .`
 - `brave <url>`
+- `codex` in your current terminal
 - Desktop application entries
 - Visible first-run setup
 - Safe per-app locking
@@ -42,14 +47,28 @@ Or reload your current shell:
 source ~/.zshrc
 ```
 
-The installer itself is fast. The actual first workstation setup starts visibly
-inside your first shell session so you can see downloads, profile migration,
-warnings, and progress.
+The installer registers shell integration first. Your next terminal offers a
+program chooser before downloading applications. Setup shows the selected
+programs and progress such as `[1/2] VS Code`.
+
+You can also choose immediately:
+
+```bash
+~/.local/bin/desk install
+
+# Explicit choices work without an interactive terminal:
+~/.local/bin/desk install code codex
+~/.local/bin/desk install all
+```
+
+The download installer reads `main`. To try a local checkout before publishing,
+run `./desk install` from the repository instead.
 
 ## First setup
 
 On the first shell after installation, `42-desk` performs the initial setup
-in the foreground.
+in the foreground. Select numbers or program names, separated by spaces or
+commas. Press Enter to keep the displayed selection, or `q` to cancel.
 
 Example:
 
@@ -57,24 +76,31 @@ Example:
 42-desk first setup
 Preparing this workstation for you.
 
-› Downloading VS Code ...
-✓ VS Code installed
-› Importing VS Code profile
-✓ VS Code profile ready
+Choose your programs
+Program files and the Codex cache use /goinfre/you. No sudo needed.
 
-› Downloading Brave ...
-✓ Brave installed
-› Importing Brave profile
-✓ Brave profile ready
+  1  [x] VS Code
+  2  [x] Brave
+  3  [ ] Codex CLI
 
+Enter numbers or names, e.g. 1 3; all; none; q to cancel.
+Enter keeps: VS Code, Brave
+Install: 1 3
+› Selected: VS Code, Codex CLI
+› [1/2] VS Code
+...
+› [2/2] Codex CLI
+...
 ✓ Workstation ready
 
-  VS Code: code .
-  Brave:   brave
+  VS Code    code .
+  Codex CLI  codex   (sign in on first use)
+
+Change programs anytime: desk install
 ```
 
-If your old VS Code or Brave is still running, `42-desk` stops before copying
-their profiles and asks you to close them first.
+For selected VS Code or Brave installations, `42-desk` checks whether the old
+application is running before copying its profile and asks you to close it first.
 
 Example:
 
@@ -105,7 +131,9 @@ maintenance and update checks run in the background.
 desk
 ```
 
-Prepare everything and open VS Code + Brave.
+Prepare your saved selection and open the selected desktop applications.
+Codex is a terminal application: run `codex` or `desk ai` when you want to use it.
+Plain `desk` does not start a Codex session automatically.
 
 ### VS Code
 
@@ -137,9 +165,57 @@ or directly:
 brave https://github.com
 ```
 
+### Codex CLI
+
+```bash
+desk install codex       # Select only Codex and install/update it
+codex                   # Start in the current terminal
+codex login             # Sign in with your own account
+desk ai --help          # Same managed program, without relying on PATH
+desk codex exec "explain this project"
+```
+
+Codex installation needs `curl`, `python3`, and `tar`.
+
+Codex is downloaded from OpenAI's official `@openai/codex` native platform
+package on `registry.npmjs.org`. The archive's SHA-512 integrity is checked
+before installation. No global npm installation or Node.js runtime is needed.
+Linux x86-64 and ARM64 are supported for Codex; VS Code and Brave downloads
+currently target Linux x86-64.
+
+Codex keeps the current terminal, standard input, signals, and exit status.
+Installation does not log you in or require an API key. Use Codex's normal
+sign-in flow after installation. Updates are managed with `desk p`; running
+Codex sessions postpone binary replacement.
+
+### Choose programs
+
+```bash
+desk install               # Interactive chooser
+desk choose                # Alias for the same chooser
+desk install code codex    # Save exactly this selection and prepare it
+desk install brave         # Browser only
+desk install all           # VS Code, Brave, and Codex CLI
+desk install none          # Disable automatic program preparation
+desk p                     # Prepare/update the saved selection
+desk st                    # Show selection, installation state, and versions
+```
+
+Choices are stored as plain names in `~/.config/desk/programs` (or under
+`XDG_CONFIG_HOME`). Selecting a different set does not uninstall or delete
+previous programs, profiles, or command wrappers. Explicit commands such as
+`desk b` still work for programs outside the saved selection; these commands
+do not change the selection. `desk clean` resets all desk-managed programs.
+
+Existing installations retain VS Code and Brave until you choose differently.
+A fresh noninteractive `desk p` also uses these defaults. For unattended
+selection, pass names explicitly to `desk install`; the argument-free chooser
+requires an interactive terminal. Invalid choices and cancellation leave the
+saved selection unchanged.
+
 ### Automatic WebGL compatibility
 
-Run `desk` as usual to open VS Code and Brave. Brave keeps your existing
+With Brave selected, run `desk` as usual to open your desktop applications. Brave keeps your existing
 accounts, history, bookmarks, extensions, and profile.
 
 On workstations with no accessible GPU render node under `/dev/dri/renderD*`,
@@ -163,10 +239,12 @@ extensions in your existing profile; `desk` does not reset your data.
 ## Commands
 
 ```text
-desk                 prepare + open Code and Brave
+desk                 prepare selection + open selected desktop apps
 desk c [ARGS]        open VS Code
 desk b [ARGS]        open Brave
-desk p               prepare/update everything
+desk ai [ARGS]       run Codex CLI in this terminal
+desk install [APPS]  choose, save, and prepare programs
+desk p               prepare/update selected programs
 desk s [c|b]         re-import profile data
 desk x               close old Flatpak/Snap apps
 desk st              show status
@@ -212,7 +290,7 @@ configure extensions
 open project
 ```
 
-It does not wait for Brave.
+It does not wait for Brave or Codex.
 
 Likewise:
 
@@ -234,7 +312,7 @@ or:
 desk p
 ```
 
-prepares both applications.
+prepares the saved selection.
 
 ## Background behavior
 
@@ -251,20 +329,23 @@ first-run work immediately instead of waiting on its locks.
 After the workstation is initialized:
 
 - normal shell startup stays fast
-- a full update check happens at most once every 12 hours
+- an update check for selected programs happens after the 12-hour interval
 - that maintenance check runs in the background
 - if everything is already ready, nothing visible happens
 
 ## Shell integration
 
-`42-desk` adds a managed block to your shell configuration:
+`42-desk` adds a managed block to your shell configuration. For example, when
+VS Code and Codex are selected in zsh:
 
 ```bash
 # >>> desk >>>
 export PATH="$HOME/.local/bin:$PATH"
 
-unalias code brave 2>/dev/null || true
-unfunction code brave 2>/dev/null || true
+unalias code 2>/dev/null || true
+unfunction code 2>/dev/null || true
+unalias codex 2>/dev/null || true
+unfunction codex 2>/dev/null || true
 
 command desk _shell
 # <<< desk <<<
@@ -273,21 +354,24 @@ command desk _shell
 For Bash, the equivalent block uses:
 
 ```bash
-unset -f code brave 2>/dev/null || true
+unset -f code 2>/dev/null || true
+unset -f codex 2>/dev/null || true
 ```
 
-This also prevents old `code` or `brave` aliases/functions from overriding the
-commands managed by `42-desk`.
+Only selected program names are cleared. This prevents old aliases/functions
+from overriding the commands managed by `42-desk`. Existing open terminals may
+need to reload their shell configuration before the new commands take precedence.
 
 ## Safe concurrency
 
-VS Code and Brave use separate lock files:
+Each program has a separate directory lock, alongside the core and first-run locks:
 
 ```text
-~/.config/desk/locks/code
-~/.config/desk/locks/brave
-~/.config/desk/locks/core
-~/.config/desk/locks/first-run
+~/.config/desk/locks/code.lock/
+~/.config/desk/locks/brave.lock/
+~/.config/desk/locks/codex.lock/
+~/.config/desk/locks/core.lock/
+~/.config/desk/locks/first-run.lock/
 ```
 
 The `first-run` lock elects one shell to own the visible initial setup without
@@ -302,6 +386,7 @@ Applications normally live in:
 ```text
 /goinfre/$USER/apps/vscode
 /goinfre/$USER/apps/brave
+/goinfre/$USER/apps/codex
 ```
 
 If `/goinfre` is unavailable, `desk` falls back to:
@@ -321,7 +406,30 @@ Wrappers:
 ```text
 ~/.local/bin/code
 ~/.local/bin/brave
+~/.local/bin/codex
 ```
+
+### Codex cache and persistent data
+
+Managed Codex launches use:
+
+```text
+$GOINFRE/cache/codex/xdg   XDG_CACHE_HOME for Codex and its children
+$GOINFRE/cache/codex/tmp   TMPDIR for temporary files
+$GOINFRE/cache/codex/log   Codex log_dir default supplied by the wrapper
+```
+
+These directories are private to the user. The environment changes apply only
+to Codex and its child processes. For new Codex homes, `~/.codex/tmp` is linked
+to the managed temporary directory too, because Codex stores helper binaries
+there independently of `TMPDIR`. An existing scratch directory is left intact
+to avoid disrupting live sessions. A user-supplied `CODEX_HOME` is respected.
+
+**Credentials, configuration, session history, and other persistent Codex data
+stay in `~/.codex` (or your existing `CODEX_HOME`).** They are not treated as
+cache or moved into potentially disposable campus storage. Existing logs are
+not migrated; new managed launches use the log directory above. You can supply
+an explicit Codex `-c log_dir=...` option to override the wrapper's default.
 
 ## Profiles
 
@@ -340,14 +448,6 @@ and:
 Existing Flatpak or Snap profiles are detected automatically.
 
 Profile migration normally happens only once.
-
-When migrating from Flatpak VS Code to the native build, `desk` also checks the
-VS Code integrated-terminal `zsh` profile. If it points to a legacy `host-zsh`
-wrapper, a missing shell path, or a wrapper that invokes `flatpak-spawn`, `desk`
-backs up `settings.json` and rewrites the profile to the native host `zsh` found
-with `command -v zsh`. Deliberate working native `zsh` paths are left unchanged.
-
-Running `desk fix` performs this repair on an existing native VS Code profile too.
 
 ## Re-import profiles
 
@@ -380,6 +480,22 @@ desk st
 Example:
 
 ```text
+42-desk 2.4.0
+
+  Storage   /goinfre/you
+  Selected  VS Code, Codex CLI
+
+  PROGRAM      SELECTED  STATE        VERSION
+  VS Code      yes       installed    ...
+  Brave        no        not installed -
+  Codex CLI    yes       installed    ...
+
+  Update log   ~/.config/desk/last-run.log
+  Codex cache  /goinfre/you/cache/codex
+
+Install/change programs: desk install
+Prepare/update selection: desk p
+```text
 desk 2.3.1
 
   goinfre  /goinfre/anachat
@@ -408,11 +524,14 @@ desk clean
 - excludes disposable cache data from those backups so reset stays reasonably fast
 - removes desk-managed VS Code
 - removes desk-managed Brave
-- removes the `code` and `brave` wrappers
+- removes desk-managed Codex CLI and its managed cache
+- removes the managed `code`, `brave`, and `codex` wrappers
 - removes desktop launchers
 - removes first-run and update state
 - keeps `desk` itself installed
 - keeps the shell hook installed
+- keeps the selected programs
+- keeps Codex credentials, configuration, and sessions
 
 After the clean succeeds:
 
@@ -422,7 +541,7 @@ exit
 
 Open a new terminal.
 
-The complete first-run setup will start again visibly.
+First-run setup will start again visibly for your saved selection.
 
 ## Profile backups created by clean
 
@@ -479,7 +598,8 @@ State:
 
 ## Desktop launchers
 
-`42-desk` creates user desktop entries for the native applications.
+`42-desk` creates user desktop entries for selected VS Code and Brave installations.
+Codex runs in the terminal and has no desktop launcher.
 
 The Brave entry appears as:
 
@@ -505,7 +625,9 @@ No root access is required.
 
 ## Repository
 
-CLI regression checks (no desktop session or browser download required):
+CLI regression checks (no desktop session, network, or application download required).
+They cover program selection, installation integrity, repeat setup, cache routing,
+terminal argument/input/exit handling, and Brave launch behavior:
 
 ```bash
 bash -n desk install.sh

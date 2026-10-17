@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.3.0"
+VERSION="2.4.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -38,6 +38,9 @@ LOCK_DIR="$STATE_DIR/locks"
 STAMP="$STATE_DIR/auto-check"
 INITIALIZED="$STATE_DIR/initialized"
 LOG_FILE="$STATE_DIR/last-run.log"
+PROGRAMS_FILE="$STATE_DIR/programs"
+# Existing installations keep their original two-program selection.
+PROGRAMS=(code brave)
 
 AUTO_CHECK_SECONDS=$((12 * 60 * 60))
 LOCK_WAIT_SECONDS=60
@@ -178,6 +181,8 @@ label() {
   case "$1" in
     vscode) echo "VS Code" ;;
     brave) echo "Brave" ;;
+    code) echo "VS Code" ;;
+    codex) echo "Codex CLI" ;;
     *) echo "$1" ;;
   esac
 }
@@ -200,10 +205,12 @@ usage() {
 
   printf '%bUsage%b\n' "$C_BOLD" "$C_RESET"
 
-  printf '  desk                 prepare + open Code and Brave\n'
+  printf '  desk                 prepare selection + open selected desktop apps\n'
+  printf '  desk install [APPS]  choose programs, save selection, and install\n'
   printf '  desk c [ARGS]        open VS Code\n'
   printf '  desk b [ARGS]        open Brave\n'
-  printf '  desk p               prepare/update everything\n'
+  printf '  desk ai [ARGS]       run Codex CLI in this terminal\n'
+  printf '  desk p               prepare/update selected programs\n'
   printf '  desk s [c|b]         re-import profile data\n'
   printf '  desk x               close old Flatpak/Snap apps\n'
   printf '  desk st              show status\n'
@@ -213,8 +220,150 @@ usage() {
   printf '%bDirect%b  code .   brave [URL]\n' \
     "$C_BOLD" "$C_RESET"
 
+  printf '          codex [ARGS]\n\n'
+  printf 'Programs: code, brave, codex, all, none\n'
+  printf 'Examples: desk install code codex   |   desk install\n'
+  printf 'Deselecting a program leaves its installation and data intact.\n'
+
   printf '%bAliases%b c=code  b=brave  p=prep  s=sync  x=close  st=status\n' \
     "$C_BOLD" "$C_RESET"
+}
+
+
+# -------------------------------------------------------------------
+# Program selection (plain data, never sourced as shell code)
+# -------------------------------------------------------------------
+
+selected() {
+  local program
+  for program in "${PROGRAMS[@]}"; do
+    [ "$program" != "$1" ] || return 0
+  done
+  return 1
+}
+
+
+normalize_programs() {
+  local token word
+  local code=0 brave=0 codex=0 none=0
+  local -a words=()
+  for token in "$@"; do
+    read -r -a words <<< "${token//,/ }"
+    for word in "${words[@]}"; do
+      case "$word" in
+        1|c|code|vscode) code=1 ;;
+        2|b|brave) brave=1 ;;
+        3|ai|codex) codex=1 ;;
+        all) code=1; brave=1; codex=1 ;;
+        none) none=1 ;;
+        *) fail "Unknown program: $word. Choose code, brave, codex, all, or none."; return 2 ;;
+      esac
+    done
+  done
+  if [ "$none" = 1 ] && [ "$((code + brave + codex))" != 0 ]; then
+    fail "Use 'none' on its own."
+    return 2
+  fi
+  if [ "$none" = 0 ] && [ "$((code + brave + codex))" = 0 ]; then
+    fail "Choose at least one program, or 'none'."
+    return 2
+  fi
+  PROGRAMS=()
+  [ "$code" = 0 ] || PROGRAMS+=(code)
+  [ "$brave" = 0 ] || PROGRAMS+=(brave)
+  [ "$codex" = 0 ] || PROGRAMS+=(codex)
+  return 0
+}
+
+
+load_programs() {
+  local -a saved=()
+  [ -f "$PROGRAMS_FILE" ] || return 0
+  mapfile -t saved < "$PROGRAMS_FILE"
+  normalize_programs "${saved[@]}"
+}
+
+
+save_programs() {
+  local tmp
+  tmp=$(mktemp "$STATE_DIR/programs.XXXXXX") || return 1
+  if ! {
+    if [ "${#PROGRAMS[@]}" = 0 ]; then
+      printf 'none\n'
+    else
+      printf '%s\n' "${PROGRAMS[@]}"
+    fi > "$tmp" && mv "$tmp" "$PROGRAMS_FILE"
+  }; then
+    rm -f "$tmp"
+    return 1
+  fi
+  rm -f "$STAMP"
+}
+
+
+selection_summary() {
+  local program
+  if [ "${#PROGRAMS[@]}" = 0 ]; then
+    printf 'none'
+    return
+  fi
+  local separator=""
+  for program in "${PROGRAMS[@]}"; do
+    printf '%s%s' "$separator" "$(label "$program")"
+    separator=', '
+  done
+}
+
+
+choose_programs() {
+  local answer program number=0 mark
+  if [ "$#" = 0 ]; then
+    if [ ! -t 0 ]; then
+      fail "Specify programs, e.g. desk install code codex (or 'all' / 'none')."
+      return 2
+    fi
+    printf '\n%bChoose your programs%b\n' "$C_BOLD" "$C_RESET"
+    printf 'Program files and the Codex cache use %s. No sudo needed.\n\n' "$(pretty "$GOINFRE")"
+    for program in code brave codex; do
+      number=$((number + 1))
+      mark=' '
+      if selected "$program"; then mark=x; fi
+      printf '  %s  [%s] %s\n' "$number" "$mark" "$(label "$program")"
+    done
+    printf '\nEnter numbers or names, e.g. 1 3; all; none; q to cancel.\n'
+    printf 'Enter keeps: %s\n' "$(selection_summary)"
+    while true; do
+      read -r -p 'Install: ' answer || return 130
+      case "$answer" in
+        q|Q) info "Selection cancelled; nothing changed."; return 130 ;;
+        '') break ;;
+      esac
+      if normalize_programs "$answer"; then break; fi
+    done
+  else
+    normalize_programs "$@" || return $?
+  fi
+  with_lock_wait core save_programs || return 1
+  info "Selected: $(selection_summary)"
+}
+
+
+ensure_selection() {
+  [ ! -f "$PROGRAMS_FILE" ] || return 0
+  if [ ! -f "$INITIALIZED" ] && [ -t 0 ]; then
+    choose_programs
+  else
+    # Noninteractive and upgraded installations preserve the old defaults.
+    with_lock_wait core save_programs
+  fi
+}
+
+
+show_next_steps() {
+  selected code && printf '  VS Code    code .\n'
+  selected brave && printf '  Brave      brave [URL]\n'
+  selected codex && printf '  Codex CLI  codex   (sign in on first use)\n'
+  printf '\nChange programs anytime: desk install\n'
 }
 
 
@@ -362,6 +511,7 @@ setup_runtime() {
   fi
 
   chmod 700 "$GOINFRE" 2>/dev/null || true
+  load_programs
 }
 
 
@@ -537,13 +687,13 @@ first_run_wait_for_old_apps() {
     vscode_running=0
     brave_running=0
 
-    if [ -n "$OLD_VSCODE" ] &&
+    if selected code && [ -n "$OLD_VSCODE" ] &&
        old_app_running "$OLD_VSCODE"
     then
       vscode_running=1
     fi
 
-    if [ -n "$OLD_BRAVE" ] &&
+    if selected brave && [ -n "$OLD_BRAVE" ] &&
        old_app_running "$OLD_BRAVE"
     then
       brave_running=1
@@ -603,6 +753,9 @@ first_run() {
     "$C_DIM" \
     "$C_RESET"
 
+  ensure_selection || return $?
+  info "Selected: $(selection_summary)"
+
   if ! first_run_wait_for_old_apps; then
     warn "First setup cancelled."
     return 1
@@ -618,13 +771,7 @@ first_run() {
     ok "Workstation ready"
 
     printf '\n'
-    printf '  VS Code: %bcode .%b\n' \
-      "$C_BOLD" \
-      "$C_RESET"
-
-    printf '  Brave:   %bbrave%b\n' \
-      "$C_BOLD" \
-      "$C_RESET"
+    show_next_steps
 
     printf '\n'
 
@@ -835,6 +982,165 @@ install_brave() {
     "$url" \
     "$sha" \
     ""
+}
+
+
+# OpenAI publishes a native Linux binary in its npm platform artifacts.
+# Install that verified artifact directly: no Node, npm, or sudo required.
+codex_ready() {
+  [ -x "$APPS/codex/bin/codex" ]
+}
+
+
+codex_running() {
+  pgrep -f "$APPS/codex/bin/" >/dev/null 2>&1
+}
+
+
+codex_offline() {
+  if codex_ready; then
+    warn "Codex: update server unavailable; keeping the installed version."
+    return 0
+  fi
+  fail "Codex: could not read package metadata. Check registry.npmjs.org access and run 'desk p'."
+  return 1
+}
+
+
+verify_npm_integrity() {
+  python3 - "$1" "$2" <<'PY'
+import base64
+import hashlib
+import hmac
+import sys
+
+try:
+    algorithm, value = sys.argv[2].split('-', 1)
+    if algorithm != 'sha512':
+        raise ValueError('expected SHA-512 integrity metadata')
+    expected = base64.b64decode(value, validate=True)
+    digest = hashlib.sha512()
+    with open(sys.argv[1], 'rb') as archive:
+        for chunk in iter(lambda: archive.read(1024 * 1024), b''):
+            digest.update(chunk)
+    if not hmac.compare_digest(digest.digest(), expected):
+        raise ValueError('archive checksum mismatch')
+except (OSError, ValueError) as error:
+    sys.exit(f'Codex verification failed: {error}')
+PY
+}
+
+
+install_codex() {
+  local arch target meta details latest package_version url integrity tmp tool
+  local dest="$APPS/codex"
+  local -a fields=()
+  for tool in curl python3 tar; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      fail "Codex installation requires $tool. Install it, then run 'desk p'."
+      return 1
+    fi
+  done
+  if [ "$(uname -s)" != Linux ]; then
+    fail 'Codex installation currently supports Linux only.'
+    return 1
+  fi
+  case "$(uname -m)" in
+    x86_64|amd64) arch=x64; target=x86_64-unknown-linux-musl ;;
+    aarch64|arm64) arch=arm64; target=aarch64-unknown-linux-musl ;;
+    *) fail "Codex: unsupported architecture $(uname -m)."; return 1 ;;
+  esac
+  info 'Checking Codex CLI'
+  if ! meta=$(curl -fsSL --max-time 15 'https://registry.npmjs.org/@openai%2fcodex/latest'); then
+    codex_offline
+    return $?
+  fi
+  if ! details=$(python3 -c '
+import json, re, sys
+p = json.load(sys.stdin)
+version = p["version"]
+if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+    sys.exit("Invalid Codex stable version")
+alias = p["optionalDependencies"]["@openai/codex-linux-" + sys.argv[1]]
+prefix = "npm:@openai/codex@"
+if alias != prefix + version + "-linux-" + sys.argv[1]:
+    sys.exit("Unrecognized Codex platform package")
+print(version)
+print(alias[len(prefix):])
+' "$arch" <<< "$meta"); then
+    codex_offline
+    return $?
+  fi
+  mapfile -t fields <<< "$details"
+  latest=${fields[0]}
+  package_version=${fields[1]}
+  if codex_ready && [ "$(cat "$dest/.installed-version" 2>/dev/null || true)" = "$latest" ]; then
+    ok "Codex CLI $latest"
+    return 0
+  fi
+  if codex_running; then
+    warn "Codex CLI $latest available; exit Codex and run 'desk p'."
+    return 0
+  fi
+  if ! meta=$(curl -fsSL --max-time 15 "https://registry.npmjs.org/@openai%2fcodex/$package_version"); then
+    codex_offline
+    return $?
+  fi
+  if ! details=$(python3 -c '
+import json, sys
+from urllib.parse import urlparse
+p = json.load(sys.stdin)
+if p["version"] != sys.argv[1]:
+    sys.exit("Unexpected Codex platform version")
+url = p["dist"]["tarball"]
+parsed = urlparse(url)
+if parsed.scheme != "https" or parsed.netloc != "registry.npmjs.org":
+    sys.exit("Unexpected Codex download host")
+integrity = p["dist"]["integrity"]
+if not integrity.startswith("sha512-") or "\n" in integrity:
+    sys.exit("Missing Codex SHA-512 integrity metadata")
+print(url)
+print(integrity)
+' "$package_version" <<< "$meta"); then
+    return 1
+  fi
+  mapfile -t fields <<< "$details"
+  url=${fields[0]}
+  integrity=${fields[1]}
+  tmp=$(mktemp -d "$GOINFRE/.desk-codex.XXXXXX") || return 1
+  info "Downloading Codex CLI $latest"
+  if ! {
+    curl -fL --connect-timeout 15 --max-time 600 --progress-bar "$url" -o "$tmp/archive.tgz" &&
+    verify_npm_integrity "$tmp/archive.tgz" "$integrity" &&
+    mkdir "$tmp/x" &&
+    tar -xzf "$tmp/archive.tgz" --no-same-owner -C "$tmp/x" &&
+    [ -x "$tmp/x/package/vendor/$target/bin/codex" ] &&
+    "$tmp/x/package/vendor/$target/bin/codex" --version &&
+    printf '%s\n' "$latest" > "$tmp/x/package/vendor/$target/.installed-version"
+  }; then
+    rm -rf "$tmp"
+    fail "Codex installation failed; existing installation kept. Run 'desk p' to retry."
+    return 1
+  fi
+  if codex_running; then
+    rm -rf "$tmp"
+    warn 'Codex started while downloading; update postponed.'
+    return 0
+  fi
+  if [ -e "$dest" ] && ! mv "$dest" "$tmp/previous"; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  if ! mv "$tmp/x/package/vendor/$target" "$dest"; then
+    if [ -e "$tmp/previous" ] && ! mv "$tmp/previous" "$dest"; then
+      fail "Could not restore Codex. Previous installation preserved at $tmp/previous"
+      return 1
+    fi
+    rm -rf "$tmp"
+    return 1
+  fi
+  rm -rf "$tmp"
+  ok "Codex CLI $latest installed"
 }
 
 
@@ -1181,35 +1487,21 @@ write_shell_hook() {
     2>/dev/null ||
     true
 
-  if [ "$shell_name" = zsh ]; then
+  local program
+  {
+    printf '\n# >>> desk >>>\n'
+    printf 'export PATH="$HOME/.local/bin:$PATH"\n\n'
+    for program in "${PROGRAMS[@]}"; do
+      printf 'unalias %s 2>/dev/null || true\n' "$program"
+      if [ "$shell_name" = zsh ]; then
+        printf 'unfunction %s 2>/dev/null || true\n' "$program"
+      else
+        printf 'unset -f %s 2>/dev/null || true\n' "$program"
+      fi
+    done
+    printf '\ncommand desk _shell\n# <<< desk <<<\n'
+  } >> "$rc"
 
-    cat >> "$rc" <<'ZSHHOOK'
-
-# >>> desk >>>
-export PATH="$HOME/.local/bin:$PATH"
-
-unalias code brave 2>/dev/null || true
-unfunction code brave 2>/dev/null || true
-
-command desk _shell
-# <<< desk <<<
-ZSHHOOK
-
-  else
-
-    cat >> "$rc" <<'BASHHOOK'
-
-# >>> desk >>>
-export PATH="$HOME/.local/bin:$PATH"
-
-unalias code brave 2>/dev/null || true
-unset -f code brave 2>/dev/null || true
-
-command desk _shell
-# <<< desk <<<
-BASHHOOK
-
-  fi
 }
 
 
@@ -1219,8 +1511,17 @@ write_launchers() {
 
   local exec_path="$BIN_DIR/desk"
 
-  write_wrapper code code
-  write_wrapper brave brave
+  # The bootstrap installer calls fix before the first choice. Install just
+  # the shell hook then, so a Codex-only choice never gets desktop launchers.
+  if [ ! -f "$PROGRAMS_FILE" ] && [ ! -f "$INITIALIZED" ]; then
+    local -a PROGRAMS=()
+    write_shell_hook
+    return $?
+  fi
+
+  if selected code; then write_wrapper code code || return 1; fi
+  if selected brave; then write_wrapper brave brave || return 1; fi
+  if selected codex; then write_wrapper codex codex || return 1; fi
 
   icon_vscode=$(app_root "$OLD_VSCODE")
   icon_brave=$(app_root "$OLD_BRAVE")
@@ -1239,7 +1540,8 @@ write_launchers() {
 
   mkdir -p "$DATA_DIR/applications"
 
-  cat > "$DATA_DIR/applications/code-native.desktop" <<EOF
+  if selected code; then
+    cat > "$DATA_DIR/applications/code-native.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=VS Code
@@ -1249,8 +1551,10 @@ Icon=$icon_vscode
 Categories=Development;IDE;
 StartupWMClass=code
 EOF
+  fi
 
-  cat > "$DATA_DIR/applications/brave-native.desktop" <<EOF
+  if selected brave; then
+    cat > "$DATA_DIR/applications/brave-native.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Brave (native)
@@ -1261,6 +1565,7 @@ Categories=Network;WebBrowser;
 MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
 StartupWMClass=$BRAVE_WM_CLASS
 EOF
+  fi
 
   write_shell_hook
 }
@@ -1426,7 +1731,7 @@ with_lock_try() {
 # -------------------------------------------------------------------
 
 prepare_core() {
-  install_self
+  install_self || return 1
   write_launchers
 }
 
@@ -1483,33 +1788,40 @@ prepare_brave() {
 }
 
 
+prepare_codex_unlocked() {
+  install_codex || return 1
+  codex_ready || return 1
+  write_wrapper codex codex
+}
+
+
+prepare_codex() {
+  with_lock_wait codex prepare_codex_unlocked
+}
+
+
 prepare_all() {
   local failed=0
+  local program number=0
+
+  ensure_selection || return $?
 
   with_lock_wait \
     core \
     prepare_core ||
     failed=1
 
-  prepare_vscode ||
-    failed=1
-
-  prepare_brave ||
-    failed=1
+  for program in "${PROGRAMS[@]}"; do
+    number=$((number + 1))
+    info "[$number/${#PROGRAMS[@]}] $(label "$program")"
+    case "$program" in
+      code) prepare_vscode || failed=1 ;;
+      brave) prepare_brave || failed=1 ;;
+      codex) prepare_codex || failed=1 ;;
+    esac
+  done
 
   return "$failed"
-}
-
-
-free_ram() {
-  pkill \
-    -f 'gnome-software --gapplication-service' \
-    2>/dev/null &&
-
-  info \
-    "Stopped GNOME Software background service" ||
-
-  true
 }
 
 
@@ -1616,12 +1928,44 @@ open_app() {
     brave)
       with_lock_wait brave launch_brave_unlocked "$@"
       ;;
+
+    codex)
+      launch_codex "$@"
+      ;;
   esac
 }
 
 
+launch_codex() {
+  with_lock_wait core install_self || return 1
+  if ! codex_ready; then
+    with_lock_wait codex prepare_codex_unlocked || return 1
+  fi
+  local cache="$GOINFRE/cache/codex"
+  local codex_home=${CODEX_HOME:-$HOME/.codex}
+  local logs
+  mkdir -p "$cache/tmp" "$cache/log" "$cache/xdg" || return 1
+  chmod 700 "$cache" "$cache/tmp" "$cache/log" "$cache/xdg" || return 1
+  # Codex also keeps helper binaries in CODEX_HOME/tmp independently of
+  # TMPDIR. Redirect new scratch directories; never move existing live data.
+  mkdir -p "$codex_home" || return 1
+  if [ ! -e "$codex_home/tmp" ] && [ ! -L "$codex_home/tmp" ]; then
+    ln -sT "$cache/tmp" "$codex_home/tmp" || [ -e "$codex_home/tmp" ] || return 1
+  fi
+  logs=$(python3 -c 'import json,sys; print("log_dir=" + json.dumps(sys.argv[1]))' "$cache/log") || return 1
+  # Leave CODEX_HOME (auth, config, sessions) untouched. Environment overrides
+  # affect only this process and its children, never the caller's shell.
+  export XDG_CACHE_HOME="$cache/xdg"
+  export TMPDIR="$cache/tmp"
+  export PATH="$APPS/codex/codex-path:$PATH"
+  # Exec keeps the terminal, signals and exit status; do not hold a setup lock
+  # for the lifetime of an interactive Codex session.
+  exec "$APPS/codex/bin/codex" -c "$logs" "$@"
+}
+
+
 launch_apps() {
-  if ! pgrep \
+  if selected code && ! pgrep \
     -f "$APPS/vscode/" \
     >/dev/null 2>&1
   then
@@ -1635,7 +1979,7 @@ launch_apps() {
       >/dev/null 2>&1
   fi
 
-  if ! pgrep \
+  if selected brave && ! pgrep \
     -f "$APPS/brave/" \
     >/dev/null 2>&1
   then
@@ -1704,6 +2048,14 @@ shell_prepare_component() {
         rc=$?
       fi
       ;;
+
+    codex)
+      if with_lock_try codex prepare_codex_unlocked; then
+        rc=0
+      else
+        rc=$?
+      fi
+      ;;
   esac
 
   # Already being handled elsewhere.
@@ -1725,19 +2077,11 @@ auto_check() {
     >/dev/null 2>&1 ||
     true
 
-  local failed=0
+  local failed=0 program
 
-  shell_prepare_component \
-    code \
-    >>"$LOG_FILE" \
-    2>&1 ||
-    failed=1
-
-  shell_prepare_component \
-    brave \
-    >>"$LOG_FILE" \
-    2>&1 ||
-    failed=1
+  for program in "${PROGRAMS[@]}"; do
+    shell_prepare_component "$program" >>"$LOG_FILE" 2>&1 || failed=1
+  done
 
   [ "$failed" = 0 ] ||
     notify \
@@ -1850,6 +2194,11 @@ native_apps_running() {
     running=1
   fi
 
+  if codex_running; then
+    warn 'Codex CLI is running. Exit it first.'
+    running=1
+  fi
+
   [ "$running" = 0 ]
 }
 
@@ -1905,6 +2254,8 @@ clean_reset_unlocked() {
   rm -rf \
     "$APPS/vscode" \
     "$APPS/brave" \
+    "$APPS/codex" \
+    "$GOINFRE/cache/codex" \
     "$GOINFRE/cache/vscode-vsix"
 
   if managed_wrapper "$BIN_DIR/code"; then
@@ -1913,6 +2264,10 @@ clean_reset_unlocked() {
 
   if managed_wrapper "$BIN_DIR/brave"; then
     rm -f "$BIN_DIR/brave"
+  fi
+
+  if managed_wrapper "$BIN_DIR/codex"; then
+    rm -f "$BIN_DIR/codex"
   fi
 
   rm -f \
@@ -1951,6 +2306,7 @@ clean_reset() {
   local held_core=0
   local held_code=0
   local held_brave=0
+  local held_codex=0
 
   printf '%bReset 42-desk?%b\n\n' \
     "$C_BOLD" \
@@ -1959,12 +2315,14 @@ clean_reset() {
   printf 'This will remove:\n'
   printf '  • desk-managed VS Code\n'
   printf '  • desk-managed Brave\n'
-  printf '  • code/brave wrappers\n'
+  printf '  • desk-managed Codex CLI and its cache\n'
+  printf '  • code/brave/codex wrappers\n'
   printf '  • desktop launchers\n'
   printf '  • first-run/update state\n\n'
 
   printf 'Your native profiles will be backed up first.\n'
   printf 'The desk CLI and shell hook will stay installed.\n\n'
+  printf 'Program choices and Codex authentication/configuration are kept.\n\n'
 
   if [ -t 0 ]; then
     read -r -p "Continue? [y/N] " answer
@@ -2019,7 +2377,16 @@ clean_reset() {
     fi
   fi
 
+  if [ "$rc" = 0 ]; then
+    if lock_try_acquire codex; then
+      held_codex=1
+    else
+      rc=1
+    fi
+  fi
+
   if [ "$rc" != 0 ]; then
+    [ "$held_codex" = 0 ] || lock_release codex
     [ "$held_brave" = 0 ] || lock_release brave
     [ "$held_code" = 0 ] || lock_release code
     [ "$held_core" = 0 ] || lock_release core
@@ -2034,6 +2401,7 @@ clean_reset() {
     rc=$?
   fi
 
+  lock_release codex
   lock_release brave
   lock_release code
   lock_release core
@@ -2048,81 +2416,40 @@ clean_reset() {
 # -------------------------------------------------------------------
 
 show_status() {
-  local code_cmd
-  local brave_cmd
-
-  code_cmd=$(
-    command -v code \
-      2>/dev/null ||
-      true
-  )
-
-  brave_cmd=$(
-    command -v brave \
-      2>/dev/null ||
-      true
-  )
-
-  printf \
-    '%bdesk%b %s\n\n' \
-    "$C_BOLD" \
-    "$C_RESET" \
-    "$VERSION"
-
-  printf \
-    '  goinfre  %s\n' \
-    "$(pretty "$GOINFRE")"
-
-  if [ -f "$INITIALIZED" ]; then
-
-    printf \
-      '  %b✓%b setup  initialized\n' \
-      "$C_GREEN" \
-      "$C_RESET"
-
-  else
-
-    printf \
-      '  %b•%b setup  fresh\n' \
-      "$C_YELLOW" \
-      "$C_RESET"
-  fi
-
-  if vscode_ready; then
-
-    printf \
-      '  %b✓%b code   ready\n' \
-      "$C_GREEN" \
-      "$C_RESET"
-
-  else
-
-    printf \
-      '  %b✗%b code   not ready\n' \
-      "$C_RED" \
-      "$C_RESET"
-  fi
-
-  if brave_ready; then
-
-    printf \
-      '  %b✓%b brave  ready\n' \
-      "$C_GREEN" \
-      "$C_RESET"
-
-  else
-
-    printf \
-      '  %b✗%b brave  not ready\n' \
-      "$C_RED" \
-      "$C_RESET"
-  fi
-
-  printf \
-    '\n  code   %s\n  brave  %s\n  log    %s\n' \
-    "${code_cmd:-not in PATH}" \
-    "${brave_cmd:-not in PATH}" \
-    "$(pretty "$LOG_FILE")"
+  local program choice state version executable command
+  printf '%b42-desk%b %s\n\n' "$C_BOLD" "$C_RESET" "$VERSION"
+  printf '  Storage   %s\n' "$(pretty "$GOINFRE")"
+  printf '  Selected  %s\n' "$(selection_summary)"
+  printf '\n  %-12s %-9s %-12s %s\n' 'PROGRAM' 'SELECTED' 'STATE' 'VERSION'
+  for program in code brave codex; do
+    choice=no
+    if selected "$program"; then choice=yes; fi
+    state='not installed'
+    case "$program" in
+      code) executable="$APPS/vscode/bin/code"; version="$APPS/vscode/.installed-version" ;;
+      brave) executable="$APPS/brave/brave"; version="$APPS/brave/.installed-version" ;;
+      codex) executable="$APPS/codex/bin/codex"; version="$APPS/codex/.installed-version" ;;
+    esac
+    if [ -x "$executable" ]; then
+      state=installed
+      case "$program" in
+        code) vscode_ready || state='needs import' ;;
+        brave) brave_ready || state='needs import' ;;
+      esac
+    fi
+    version=$(cat "$version" 2>/dev/null || printf '%s' '-')
+    printf '  %-12s %-9s %-12s %s\n' "$(label "$program")" "$choice" "$state" "$version"
+    if selected "$program"; then
+      command=$(command -v "$program" 2>/dev/null || true)
+      if [ "$command" != "$BIN_DIR/$program" ]; then
+        printf '    Command: %s (managed wrapper: %s/%s)\n' "${command:-not in PATH}" "$(pretty "$BIN_DIR")" "$program"
+      fi
+    fi
+  done
+  printf '\n  Update log   %s\n' "$(pretty "$LOG_FILE")"
+  printf '  Codex cache  %s\n' "$(pretty "$GOINFRE/cache/codex")"
+  printf '\nInstall/change programs: desk install\n'
+  printf 'Prepare/update selection: desk p\n'
 }
 
 
@@ -2192,7 +2519,7 @@ main() {
       ;;
   esac
 
-  setup_runtime
+  setup_runtime || return $?
 
   case "$cmd" in
     run)
@@ -2202,10 +2529,10 @@ main() {
         touch "$INITIALIZED"
         touch "$STAMP"
 
-        free_ram
         launch_apps
 
-        ok "Ready"
+        ok "Selected programs ready"
+        show_next_steps
 
       else
 
@@ -2214,6 +2541,22 @@ main() {
       fi
       ;;
 
+
+    install|choose)
+      choose_programs "$@" || return $?
+      if prepare_all; then
+        touch "$INITIALIZED" "$STAMP"
+        ok "Selected programs ready"
+        show_next_steps
+      else
+        fail "Some programs need attention. Run 'desk p' to retry your selection."
+        return 1
+      fi
+      ;;
+
+    ai|codex)
+      open_app codex "$@"
+      ;;
 
     c|code|vscode)
 

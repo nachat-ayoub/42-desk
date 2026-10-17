@@ -1,0 +1,388 @@
+"""Exercise selection, verified native installation, and terminal launch offline."""
+
+import base64
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import pty
+import select
+import signal
+import subprocess
+import tarfile
+import tempfile
+import time
+import unittest
+
+
+DESK = Path(__file__).resolve().parents[1] / "desk"
+
+
+class ProgramTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="desk-programs-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.storage = self.root / "storage with spaces"
+        self.state = self.home / ".config/desk"
+        self.env = dict(os.environ)
+        self.env.update(
+            HOME=str(self.home),
+            GOINFRE=str(self.storage),
+            XDG_CONFIG_HOME=str(self.home / ".config"),
+            XDG_DATA_HOME=str(self.home / ".local/share"),
+            SHELL="/bin/bash",
+            DESK_SCRIPT=str(DESK),
+            DESK_FIXTURE=str(self.root),
+            PYTHONDONTWRITEBYTECODE="1",
+        )
+        # Never use the host's credentials or Codex state in these tests.
+        self.env.pop("CODEX_HOME", None)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.env["PATH"] = f"{self.bin}:{self.env['PATH']}"
+        self.write_executable(self.bin / "uname", "#!/bin/sh\ncase \"$1\" in -s) echo Linux;; -m) echo x86_64;; esac\n")
+        self.write_executable(self.bin / "curl", '''#!/usr/bin/env python3
+import os, pathlib, sys
+root = pathlib.Path(os.environ['DESK_FIXTURE'])
+args = sys.argv[1:]
+url = next(a for a in args if a.startswith('https://'))
+with (root / 'requests').open('a') as f:
+    f.write(url + '\\n')
+if (root / 'offline').exists():
+    sys.exit(22)
+if url.endswith('/latest'):
+    source = root / 'latest.json'
+elif url.endswith('/1.2.3-linux-x64'):
+    source = root / 'platform.json'
+elif url.endswith('/codex-test.tgz'):
+    source = root / 'artifact.tgz'
+else:
+    sys.exit('Unexpected download: ' + url)
+data = source.read_bytes()
+if '-o' in args:
+    pathlib.Path(args[args.index('-o') + 1]).write_bytes(data)
+else:
+    sys.stdout.buffer.write(data)
+''')
+        self.codex = self.storage / "apps/codex/bin/codex"
+        binary = b'''#!/usr/bin/env python3
+import json, os, pathlib, sys
+if sys.argv[1:] == ['--version']:
+    print('codex-cli 1.2.3')
+    sys.exit(0)
+root = pathlib.Path(os.environ['DESK_FIXTURE'])
+(root / 'launch.json').write_text(json.dumps({
+    'args': sys.argv[1:],
+    'cache': os.environ.get('XDG_CACHE_HOME'),
+    'tmp': os.environ.get('TMPDIR'),
+    'home': os.environ.get('CODEX_HOME'),
+    'stdin': sys.stdin.read(),
+    'path': os.environ['PATH'],
+}))
+sys.exit(int(os.environ.get('DESK_TEST_EXIT', '0')))
+'''
+        with tarfile.open(self.root / "artifact.tgz", "w:gz") as archive:
+            info = tarfile.TarInfo("package/vendor/x86_64-unknown-linux-musl/bin/codex")
+            info.size, info.mode = len(binary), 0o755
+            archive.addfile(info, io.BytesIO(binary))
+        self.integrity = "sha512-" + base64.b64encode(
+            hashlib.sha512((self.root / "artifact.tgz").read_bytes()).digest()
+        ).decode()
+        (self.root / "latest.json").write_text(json.dumps({
+            "version": "1.2.3",
+            "optionalDependencies": {
+                "@openai/codex-linux-x64": "npm:@openai/codex@1.2.3-linux-x64"
+            },
+        }))
+        self.platform = {
+            "version": "1.2.3-linux-x64",
+            "dist": {
+                "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-test.tgz",
+                "integrity": self.integrity,
+            },
+        }
+        self.write_platform()
+
+    @staticmethod
+    def write_executable(path, text):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        path.chmod(0o755)
+
+    def write_platform(self):
+        (self.root / "platform.json").write_text(json.dumps(self.platform))
+
+    def run_desk(self, *args, input="", check=True):
+        result = subprocess.run(
+            [str(DESK), *args], env=self.env, input=input,
+            capture_output=True, text=True, timeout=15,
+        )
+        if check:
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def source(self, script, check=True):
+        result = subprocess.run(
+            ["bash", "-c", 'source "$DESK_SCRIPT"; ' + script],
+            env=self.env, capture_output=True, text=True, timeout=15,
+        )
+        if check:
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def save_selection(self, text):
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "programs").write_text(text)
+
+    def test_codex_only_install_and_repeat_keeps_other_programs_uninstalled(self):
+        result = self.run_desk("install", "codex")
+        self.assertTrue(self.codex.is_file())
+        self.assertFalse((self.storage / "apps/vscode").exists())
+        self.assertFalse((self.storage / "apps/brave").exists())
+        self.assertEqual((self.state / "programs").read_text(), "codex\n")
+        self.assertTrue((self.home / ".local/bin/codex").is_file())
+        self.assertFalse((self.home / ".local/bin/code").exists())
+        self.assertFalse((self.home / ".local/share/applications/code-native.desktop").exists())
+        self.assertIn("sign in on first use", result.stdout)
+        hook = (self.home / ".bashrc").read_text()
+        self.assertIn("unalias codex", hook)
+        self.assertNotIn("unalias code ", hook)
+        self.run_desk("p")
+        requests = (self.root / "requests").read_text()
+        self.assertEqual(requests.count("codex-test.tgz"), 1)
+        self.assertEqual((self.home / ".bashrc").read_text().count("# >>> desk >>>"), 1)
+
+    def test_launch_preserves_arguments_input_exit_status_and_codex_home(self):
+        self.run_desk("install", "codex")
+        custom_home = str(self.home / "private codex")
+        self.env.update(CODEX_HOME=custom_home, DESK_TEST_EXIT="17")
+        wrapper = self.home / ".local/bin/codex"
+        result = subprocess.run(
+            [str(wrapper), "exec", "a prompt with spaces", "--", "literal"],
+            env=self.env, input="piped input\n", capture_output=True, text=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 17, result.stderr)
+        launch = json.loads((self.root / "launch.json").read_text())
+        cache = self.storage / "cache/codex"
+        self.assertEqual(launch["args"], [
+            "-c", "log_dir=" + json.dumps(str(cache / "log")),
+            "exec", "a prompt with spaces", "--", "literal",
+        ])
+        self.assertEqual(launch["cache"], str(cache / "xdg"))
+        self.assertEqual(launch["tmp"], str(cache / "tmp"))
+        self.assertEqual(launch["home"], custom_home)
+        self.assertEqual(launch["stdin"], "piped input\n")
+        self.assertEqual((cache.stat().st_mode & 0o777), 0o700)
+        self.assertEqual((Path(custom_home) / "tmp").resolve(), cache / "tmp")
+        self.assertFalse((self.state / "locks/codex.lock").exists())
+
+    def test_corrupt_download_is_rejected_and_existing_install_is_preserved(self):
+        self.codex.parent.mkdir(parents=True)
+        self.write_executable(self.codex, "#!/bin/sh\necho old codex\n")
+        (self.codex.parent.parent / ".installed-version").write_text("0.9.0\n")
+        before = self.codex.read_bytes()
+        self.platform["dist"]["integrity"] = "sha512-" + base64.b64encode(bytes(64)).decode()
+        self.write_platform()
+        result = self.run_desk("install", "codex", check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("checksum mismatch", result.stderr)
+        self.assertEqual(self.codex.read_bytes(), before)
+        self.assertFalse((self.state / "initialized").exists())
+        self.assertFalse(list(self.storage.glob(".desk-codex.*")))
+
+    def test_offline_existing_codex_remains_usable_but_fresh_install_fails(self):
+        (self.root / "offline").touch()
+        self.assertNotEqual(self.run_desk("install", "codex", check=False).returncode, 0)
+        self.write_executable(self.codex, "#!/bin/sh\necho existing codex\n")
+        result = self.run_desk("p")
+        self.assertIn("keeping the installed version", result.stderr)
+
+    def test_selection_validation_cannot_execute_shell_and_preserves_saved_choice(self):
+        self.save_selection("codex\n")
+        bad_choices = ["unknown", "none,codex", "$(touch hacked)", "; touch hacked"]
+        for choice in bad_choices:
+            with self.subTest(choice=choice):
+                result = self.run_desk("install", choice, check=False)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual((self.state / "programs").read_text(), "codex\n")
+        self.assertFalse((self.root / "requests").exists())
+
+    def test_none_installs_nothing_and_status_distinguishes_selection(self):
+        self.run_desk("install", "none")
+        self.assertEqual((self.state / "programs").read_text(), "none\n")
+        self.assertFalse((self.root / "requests").exists())
+        result = self.run_desk("st")
+        self.assertIn("Selected  none", result.stdout)
+        self.assertIn("Codex CLI", result.stdout)
+        self.assertIn("not installed", result.stdout)
+
+    def test_background_updates_only_the_saved_selection(self):
+        self.save_selection("code\ncodex\n")
+        self.source('''
+prepare_core() { :; }
+prepare_vscode_unlocked() { echo code >> "$DESK_FIXTURE/prepared"; }
+prepare_brave_unlocked() { echo brave >> "$DESK_FIXTURE/prepared"; }
+prepare_codex_unlocked() { echo codex >> "$DESK_FIXTURE/prepared"; }
+main _auto
+''')
+        self.assertEqual((self.root / "prepared").read_text(), "code\ncodex\n")
+
+    def test_aliases_are_normalized_and_only_selected_installers_execute(self):
+        self.source('''
+prepare_vscode_unlocked() { echo code >> "$DESK_FIXTURE/prepared"; }
+prepare_brave_unlocked() { echo brave >> "$DESK_FIXTURE/prepared"; }
+prepare_codex_unlocked() { echo codex >> "$DESK_FIXTURE/prepared"; }
+main install 3,c code
+''')
+        self.assertEqual((self.state / "programs").read_text(), "code\ncodex\n")
+        self.assertEqual((self.root / "prepared").read_text(), "code\ncodex\n")
+
+    def test_upgraded_noninteractive_installation_keeps_original_defaults(self):
+        self.state.mkdir(parents=True)
+        (self.state / "initialized").touch()
+        self.source('''
+prepare_vscode_unlocked() { echo code >> "$DESK_FIXTURE/prepared"; }
+prepare_brave_unlocked() { echo brave >> "$DESK_FIXTURE/prepared"; }
+prepare_codex_unlocked() { echo codex >> "$DESK_FIXTURE/prepared"; }
+main p
+''')
+        self.assertEqual((self.state / "programs").read_text(), "code\nbrave\n")
+        self.assertEqual((self.root / "prepared").read_text(), "code\nbrave\n")
+
+    def test_plain_run_opens_only_selected_desktop_apps(self):
+        self.save_selection("brave\ncodex\n")
+        self.source('''
+setup_runtime
+pgrep() { return 1; }
+setsid() { printf '%s\\n' "$*" >> "$DESK_FIXTURE/opened"; }
+launch_apps
+''')
+        opened = (self.root / "opened").read_text()
+        self.assertIn("desk brave", opened)
+        self.assertNotIn("desk code", opened)
+        self.assertNotIn("desk codex", opened)
+
+    def test_noninteractive_chooser_requires_explicit_programs(self):
+        result = self.run_desk("install", check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((self.state / "programs").exists())
+
+    def test_bootstrap_fix_defers_wrappers_until_user_chooses(self):
+        self.run_desk("fix")
+        self.assertIn("command desk _shell", (self.home / ".bashrc").read_text())
+        for program in ("code", "brave", "codex"):
+            self.assertFalse((self.home / ".local/bin" / program).exists())
+        self.run_desk("install", "codex")
+        self.assertTrue((self.home / ".local/bin/codex").exists())
+        self.assertFalse((self.home / ".local/bin/code").exists())
+
+    def test_existing_codex_scratch_directory_is_preserved(self):
+        self.run_desk("install", "codex")
+        scratch = self.home / ".codex/tmp"
+        scratch.mkdir(parents=True)
+        (scratch / "existing-file").write_text("keep me")
+        self.run_desk("codex")
+        self.assertFalse(scratch.is_symlink())
+        self.assertEqual((scratch / "existing-file").read_text(), "keep me")
+
+    def test_clean_removes_codex_files_but_keeps_authentication_and_selection(self):
+        self.run_desk("install", "codex")
+        private = self.home / ".codex"
+        private.mkdir()
+        (private / "auth.json").write_text("existing credential fixture")
+        cache = self.storage / "cache/codex"
+        cache.mkdir(parents=True)
+        (cache / "cache-file").touch()
+        self.source("setup_runtime; clean_reset_unlocked")
+        self.assertFalse(self.codex.exists())
+        self.assertFalse(cache.exists())
+        self.assertEqual((private / "auth.json").read_text(), "existing credential fixture")
+        self.assertEqual((self.state / "programs").read_text(), "codex\n")
+
+    def interact(self, command, answers, prompt=b"Install: "):
+        master, slave = pty.openpty()
+        process = subprocess.Popen(
+            [str(DESK), command], stdin=slave, stdout=slave, stderr=slave,
+            env=self.env,
+        )
+        os.close(slave)
+        output = b""
+        answers = iter(answers)
+        prompts = 0
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if select.select([master], [], [], 0.1)[0]:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError:
+                        break
+                    output += chunk
+                    if output.count(prompt) > prompts:
+                        prompts += 1
+                        os.write(master, next(answers))
+            return process.wait(timeout=2), output
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            os.close(master)
+
+    def test_interactive_chooser_recovers_from_invalid_input(self):
+        code, output = self.interact("install", [b"bad-choice\n", b"3\n"])
+        self.assertEqual(code, 0, output.decode())
+        self.assertIn(b"Unknown program", output)
+        self.assertEqual((self.state / "programs").read_text(), "codex\n")
+
+    def test_first_shell_offers_selection_and_prepares_only_codex(self):
+        code, output = self.interact("_shell", [b"3\n"])
+        self.assertEqual(code, 0, output.decode())
+        self.assertIn(b"Choose your programs", output)
+        self.assertIn(b"Workstation ready", output)
+        self.assertEqual((self.state / "programs").read_text(), "codex\n")
+        self.assertTrue((self.state / "initialized").exists())
+        self.assertTrue(self.codex.exists())
+        self.assertFalse((self.storage / "apps/brave").exists())
+        self.assertFalse((self.state / "locks/first-run.lock").exists())
+
+    def test_cancel_keeps_choice_and_does_not_download(self):
+        self.save_selection("brave\n")
+        code, output = self.interact("install", [b"q\n"])
+        self.assertEqual(code, 130, output.decode())
+        self.assertEqual((self.state / "programs").read_text(), "brave\n")
+        self.assertFalse((self.root / "requests").exists())
+
+    def test_clean_refuses_busy_codex_lock_and_releases_other_locks(self):
+        self.save_selection("codex\n")
+        lock = self.state / "locks/codex.lock"
+        lock.mkdir(parents=True)
+        (lock / "pid").write_text(str(os.getpid()))
+        code, output = self.interact("clean", [b"y\n"], b"Continue? [y/N] ")
+        self.assertEqual(code, 1, output.decode())
+        self.assertIn(b"Another desk setup/update is still running", output)
+        self.assertTrue(lock.exists())
+        for name in ("first-run", "core", "code", "brave"):
+            self.assertFalse((self.state / "locks" / (name + ".lock")).exists())
+
+    def test_running_codex_postpones_update_without_downloading(self):
+        self.write_executable(self.codex, "#!/bin/sh\nsleep 30\n")
+        marker = self.codex.parent.parent / ".installed-version"
+        marker.write_text("0.9.0\n")
+        process = subprocess.Popen([str(self.codex)], start_new_session=True)
+        try:
+            result = self.run_desk("install", "codex")
+            self.assertIn("exit Codex", result.stderr)
+            self.assertEqual(marker.read_text(), "0.9.0\n")
+            self.assertNotIn("codex-test.tgz", (self.root / "requests").read_text())
+        finally:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=5)
+
+
+if __name__ == "__main__":
+    unittest.main()

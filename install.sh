@@ -59,7 +59,7 @@ install \
   "$DESK"
 
 
-# Install wrappers, desktop entries and shell integration.
+# Register shell integration. App wrappers follow the user's program choice.
 "$DESK" fix
 
 
@@ -72,7 +72,10 @@ printf \
 
 
 printf '\n'
-printf 'Your first workstation setup will run visibly in your next terminal.\n\n'
+printf 'Choose VS Code, Brave, Codex CLI, or any combination.\n'
+printf 'Your next terminal will offer the program chooser before downloading apps.\n\n'
+printf 'Or choose now: desk install\n'
+printf 'Without prompts: ~/.local/bin/desk install code codex\n\n'
 
 
 case "$(basename "${SHELL:-}")" in
