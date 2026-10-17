@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.7.0"
+VERSION="2.8.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -42,7 +42,7 @@ PROGRAMS_FILE="$STATE_DIR/programs"
 OPEN_PROGRAMS_FILE="$STATE_DIR/open-programs"
 # Existing installations keep their original two-program selection.
 PROGRAMS=(code brave)
-ALL_PROGRAMS=(code brave codex claude android)
+ALL_PROGRAMS=(code brave codex claude android flutter)
 PICKER_PROGRAMS=("${ALL_PROGRAMS[@]}")
 
 AUTO_CHECK_SECONDS=$((12 * 60 * 60))
@@ -188,6 +188,7 @@ label() {
     codex) echo "Codex CLI" ;;
     claude) echo "Claude Code" ;;
     android) echo "Android 11 Google Play" ;;
+    flutter) echo "Flutter SDK" ;;
     *) echo "$1" ;;
   esac
 }
@@ -219,6 +220,7 @@ usage() {
   printf '  desk ai [ARGS]       run Codex CLI in this terminal\n'
   printf '  desk claude [ARGS]   run Claude Code in this terminal\n'
   printf '  desk android [ARGS] open Android 11 Google Play (Pixel 9 display)\n'
+  printf '  desk flutter [ARGS] run Flutter (includes Dart)\n'
   printf '  desk p               prepare/update selected programs\n'
   printf '  desk s [c|b]         re-import profile data\n'
   printf '  desk x               close old Flatpak/Snap apps\n'
@@ -229,8 +231,9 @@ usage() {
   printf '%bDirect%b  code .   brave [URL]\n' \
     "$C_BOLD" "$C_RESET"
 
-  printf '          codex [ARGS]   claude [ARGS]   android [ARGS]\n\n'
-  printf 'Programs: code, brave, codex, claude, android, all, none\n'
+  printf '          codex [ARGS]   claude [ARGS]   android [ARGS]\n'
+  printf '          flutter [ARGS]   dart [ARGS]\n\n'
+  printf 'Programs: code, brave, codex, claude, android, flutter, all, none\n'
   printf 'Examples: desk install code codex   |   desk install\n'
   printf 'Deselecting a program leaves its installation and data intact.\n'
 
@@ -254,7 +257,7 @@ selected() {
 
 normalize_programs() {
   local token word
-  local code=0 brave=0 codex=0 claude=0 android=0 none=0
+  local code=0 brave=0 codex=0 claude=0 android=0 flutter=0 none=0
   local -a words=()
   for token in "$@"; do
     read -r -a words <<< "${token//,/ }"
@@ -265,17 +268,18 @@ normalize_programs() {
         ai|codex) codex=1 ;;
         cc|claude|claude-code) claude=1 ;;
         android|emulator) android=1 ;;
-        all) code=1; brave=1; codex=1; claude=1; android=1 ;;
+        flutter) flutter=1 ;;
+        all) code=1; brave=1; codex=1; claude=1; android=1; flutter=1 ;;
         none) none=1 ;;
-        *) fail "Unknown program: $word. Choose code, brave, codex, claude, android, all, or none."; return 2 ;;
+        *) fail "Unknown program: $word. Choose code, brave, codex, claude, android, flutter, all, or none."; return 2 ;;
       esac
     done
   done
-  if [ "$none" = 1 ] && [ "$((code + brave + codex + claude + android))" != 0 ]; then
+  if [ "$none" = 1 ] && [ "$((code + brave + codex + claude + android + flutter))" != 0 ]; then
     fail "Use 'none' on its own."
     return 2
   fi
-  if [ "$none" = 0 ] && [ "$((code + brave + codex + claude + android))" = 0 ]; then
+  if [ "$none" = 0 ] && [ "$((code + brave + codex + claude + android + flutter))" = 0 ]; then
     fail "Choose at least one program, or 'none'."
     return 2
   fi
@@ -285,6 +289,7 @@ normalize_programs() {
   [ "$codex" = 0 ] || PROGRAMS+=(codex)
   [ "$claude" = 0 ] || PROGRAMS+=(claude)
   [ "$android" = 0 ] || PROGRAMS+=(android)
+  [ "$flutter" = 0 ] || PROGRAMS+=(flutter)
   return 0
 }
 
@@ -355,7 +360,7 @@ import tty
 
 title, action = sys.argv[1:3]
 separator = sys.argv.index("--", 3)
-labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play"}
+labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play", "flutter": "Flutter SDK"}
 programs = [(name, labels[name]) for name in sys.argv[3:separator]]
 chosen = set(sys.argv[separator + 1:]).intersection(name for name, _ in programs)
 current = 0
@@ -495,6 +500,7 @@ show_next_steps() {
   selected codex && printf '  Codex CLI  codex   (sign in on first use)\n'
   selected claude && printf '  Claude     claude  (sign in on first use)\n'
   selected android && printf '  Android    android  (Google Play, 1080x2424 display)\n'
+  selected flutter && printf '  Flutter    flutter doctor   |   dart --version\n'
   printf '\nOpen programs: desk   |   Update installed programs: desk update\n'
   printf '\nChange programs anytime: desk install\n'
 }
@@ -1722,6 +1728,17 @@ write_shell_hook() {
   {
     printf '\n# >>> desk >>>\n'
     printf 'export PATH="$HOME/.local/bin:$PATH"\n\n'
+    if selected flutter; then
+      printf 'export FLUTTER_ROOT=%q\n' "$APPS/flutter/sdk"
+      printf 'if [ -z "${PUB_CACHE:-}" ]; then export PUB_CACHE=%q; fi\n' "$APPS/flutter/cache/pub"
+      printf 'if [ -z "${GRADLE_USER_HOME:-}" ]; then export GRADLE_USER_HOME=%q; fi\n' "$APPS/flutter/cache/gradle"
+      printf 'unalias dart 2>/dev/null || true\n'
+      if [ "$shell_name" = zsh ]; then
+        printf 'unfunction dart 2>/dev/null || true\n'
+      else
+        printf 'unset -f dart 2>/dev/null || true\n'
+      fi
+    fi
     for program in "${PROGRAMS[@]}"; do
       printf 'unalias %s 2>/dev/null || true\n' "$program"
       if [ "$shell_name" = zsh ]; then
@@ -1755,6 +1772,10 @@ write_launchers() {
   if selected codex; then write_wrapper codex codex || return 1; fi
   if selected claude; then write_wrapper claude claude || return 1; fi
   if selected android; then write_wrapper android android || return 1; fi
+  if selected flutter; then
+    write_wrapper flutter flutter || return 1
+    write_wrapper dart dart || return 1
+  fi
 
   icon_vscode=$(app_root "$OLD_VSCODE")
   icon_brave=$(app_root "$OLD_BRAVE")
@@ -2290,6 +2311,275 @@ run_android() (
 
 
 # -------------------------------------------------------------------
+# Flutter stable SDK (Dart included; SDK and default caches in goinfre)
+# -------------------------------------------------------------------
+
+flutter_environment() {
+  FLUTTER_BASE="$APPS/flutter"
+  export FLUTTER_ROOT="$FLUTTER_BASE/sdk"
+  export PUB_CACHE="${PUB_CACHE:-$FLUTTER_BASE/cache/pub}"
+  export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$FLUTTER_BASE/cache/gradle}"
+  export XDG_CACHE_HOME="$FLUTTER_BASE/cache/xdg" XDG_CONFIG_HOME="$FLUTTER_BASE/config"
+  export XDG_DATA_HOME="$FLUTTER_BASE/data" XDG_STATE_HOME="$FLUTTER_BASE/state"
+  export TMPDIR="$FLUTTER_BASE/tmp" TMP="$FLUTTER_BASE/tmp" TEMP="$FLUTTER_BASE/tmp"
+  export FLUTTER_SUPPRESS_ANALYTICS="${FLUTTER_SUPPRESS_ANALYTICS:-true}"
+  export PATH="$FLUTTER_ROOT/bin:$PATH"
+  umask 077
+  mkdir -p "$PUB_CACHE" "$GRADLE_USER_HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" \
+    "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$TMPDIR" "$FLUTTER_BASE/downloads" || return 1
+  # Reuse the managed Android SDK only when no external SDK was specified.
+  # Its private ADB server is on 5038, not the usual 5037.
+  if [ -z "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" ] && [ -x "$APPS/android/sdk/platform-tools/adb" ]; then
+    export ANDROID_HOME="$APPS/android/sdk" ANDROID_SDK_ROOT="$APPS/android/sdk"
+  fi
+  if [ "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" = "$APPS/android/sdk" ]; then
+    export ANDROID_HOME="$APPS/android/sdk" ANDROID_SDK_ROOT="$APPS/android/sdk"
+    export ANDROID_USER_HOME="$APPS/android/state/.android"
+    export ANDROID_EMULATOR_HOME="$ANDROID_USER_HOME" ANDROID_SDK_HOME="$APPS/android/state"
+    export ANDROID_AVD_HOME="$APPS/android/avd"
+    export ANDROID_ADB_SERVER_PORT="${ANDROID_ADB_SERVER_PORT:-5038}" ADB_SERVER_PORT="${ADB_SERVER_PORT:-5038}"
+    export ADB_SERVER_SOCKET="${ADB_SERVER_SOCKET:-tcp:localhost:5038}"
+    mkdir -p "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME" || return 1
+  fi
+}
+
+
+flutter_ready() {
+  [ -x "$APPS/flutter/sdk/bin/flutter" ] &&
+    [ -x "$APPS/flutter/sdk/bin/dart" ] &&
+    [ -x "$APPS/flutter/sdk/bin/cache/dart-sdk/bin/dart" ] &&
+    [ -d "$APPS/flutter/sdk/.git" ]
+}
+
+
+flutter_running() {
+  python3 - "$APPS/flutter/sdk" <<'PY'
+import glob, os, sys
+root = os.path.realpath(sys.argv[1]) + '/'
+for entry in glob.iglob('/proc/[0-9]*'):
+    try:
+        if os.readlink(entry + '/exe').startswith(root):
+            sys.exit(0)
+        with open(entry + '/cmdline', 'rb') as stream:
+            args = stream.read().split(b'\0')
+        if any(arg.startswith(os.fsencode(root + 'bin/')) for arg in args):
+            sys.exit(0)
+    except OSError:
+        pass
+sys.exit(1)
+PY
+}
+
+
+install_flutter() (
+  local tool arch
+  for tool in curl python3 git tar xz unzip zip; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      fail "Flutter requires $tool. Install it, then run '$(retry_program_command flutter)'."
+      return 1
+    fi
+  done
+  if [ "$(uname -s)" != Linux ]; then fail 'Flutter installation currently supports Linux only.'; return 1; fi
+  case "$(uname -m)" in
+    x86_64|amd64) arch=x64 ;;
+    aarch64|arm64) arch=arm64 ;;
+    *) fail 'Flutter: unsupported Linux architecture.'; return 1 ;;
+  esac
+  if flutter_ready && [ "${UPDATE_ONLY:-0}" != 1 ]; then
+    ok 'Flutter SDK is ready; reusing it. Use desk update flutter to check new releases.'
+    return 0
+  fi
+  if flutter_running; then
+    warn "Flutter/Dart tools are running. Close them (including IDE analysis servers), then run '$(retry_program_command flutter)'."
+    flutter_ready
+    return $?
+  fi
+  flutter_environment || return 1
+  info 'Checking Flutter stable SDK'
+  python3 - "$FLUTTER_BASE" "$arch" "${UPDATE_ONLY:-0}" <<'FLUTTER_INSTALLER'
+import glob
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+from urllib.parse import urljoin, urlparse
+
+base, arch, update = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3] == '1'
+sdk = base / 'sdk'
+repo = 'https://storage.googleapis.com/flutter_infra_release/flutter/'
+manifest_url = repo + 'releases/releases_linux.json'
+marker = base / '.desk-release.json'
+
+
+def ready(root):
+    return (root / '.git').is_dir() and all(os.access(root / file, os.X_OK) for file in (
+        'bin/flutter', 'bin/dart', 'bin/cache/dart-sdk/bin/dart'))
+
+
+def fetch(url, destination):
+    part = destination.with_name(destination.name + '.part')
+    try:
+        subprocess.run(['curl', '-fL', '--retry', '2', '--connect-timeout', '15',
+                        '--speed-limit', '1024', '--speed-time', '60', url, '-o', str(part)], check=True)
+        part.replace(destination)
+    finally:
+        part.unlink(missing_ok=True)
+
+
+def git(root, *args):
+    return subprocess.check_output(['git', '-C', str(root), *args], text=True, stderr=subprocess.PIPE).strip()
+
+
+def busy():
+    prefix = os.fsencode(str(sdk) + '/bin/')
+    for entry in glob.iglob('/proc/[0-9]*'):
+        try:
+            if os.readlink(entry + '/exe').startswith(str(sdk) + '/'):
+                return True
+            with open(entry + '/cmdline', 'rb') as stream:
+                if any(arg.startswith(prefix) for arg in stream.read().split(b'\0')):
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+def main():
+    head = None
+    manifest = base / 'downloads/releases_linux.json'
+    try:
+        fetch(manifest_url, manifest)
+    except subprocess.CalledProcessError:
+        if ready(sdk):
+            print('Flutter release server unavailable; keeping the installed SDK.', file=sys.stderr)
+            return
+        raise RuntimeError('cannot reach storage.googleapis.com; allow access and retry desk install flutter')
+    data = json.loads(manifest.read_text())
+    if data.get('base_url', '').rstrip('/') != repo.rstrip('/'):
+        raise RuntimeError('unexpected Flutter archive base URL')
+    releases = [r for r in data['releases'] if r.get('channel') == 'stable'
+                and r.get('hash') == data['current_release']['stable']
+                and r.get('dart_sdk_arch', 'x64') == arch]
+    if not releases:
+        raise RuntimeError('the current stable Flutter release has no Linux ' + arch + ' archive')
+    release = releases[0]
+    version, revision, archive_name, checksum = (release[k] for k in ('version', 'hash', 'archive', 'sha256'))
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version) or not re.fullmatch(r'[a-fA-F0-9]{40}', revision):
+        raise RuntimeError('invalid stable release metadata')
+    if not re.fullmatch(r'[a-fA-F0-9]{64}', checksum):
+        raise RuntimeError('missing Flutter SHA-256 checksum')
+    url = urljoin(repo, archive_name)
+    if not url.startswith(repo) or urlparse(url).scheme != 'https' or not url.endswith('.tar.xz'):
+        raise RuntimeError('unexpected Flutter archive URL')
+    if sdk.exists():
+        if not ready(sdk):
+            raise RuntimeError('unrecognized or incomplete SDK at ' + str(sdk) + '; inspect it before retrying')
+        head = git(sdk, 'rev-parse', 'HEAD')
+        if head == revision:
+            (base / '.installed-version').write_text(version + '\n')
+            marker.write_text(json.dumps({'version': version, 'hash': revision}))
+            print('Flutter ' + version + ' is already current.', flush=True)
+            return
+        previous = json.loads(marker.read_text()) if marker.exists() else {}
+        if update and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', previous.get('version', '')):
+            parts = lambda v: tuple(map(int, v.split('.')))
+            if parts(previous['version']) > parts(version):
+                print('Keeping newer installed Flutter ' + previous['version'], flush=True)
+                return
+        if git(sdk, 'status', '--porcelain') or head != previous.get('hash'):
+            raise RuntimeError('Flutter SDK has local changes or an unrecognized revision; preserve them before updating')
+    if not hasattr(tarfile, 'data_filter'):
+        raise RuntimeError('safe SDK extraction requires Python with tarfile.data_filter (Python 3.12 or a security-updated older release)')
+    if shutil.disk_usage(base).free < 8 * 1024**3:
+        raise RuntimeError('keep at least 8 GB free in goinfre for Flutter download and extraction')
+    archive = base / 'downloads' / Path(archive_name).name
+
+    def verified():
+        if not archive.is_file():
+            return False
+        digest = hashlib.sha256()
+        with archive.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.hexdigest().lower() == checksum.lower()
+
+    if not verified():
+        print('Downloading Flutter ' + version, flush=True)
+        fetch(url, archive)
+    if not verified():
+        archive.unlink(missing_ok=True)
+        raise RuntimeError('Flutter archive checksum mismatch; existing SDK kept')
+    with tempfile.TemporaryDirectory(prefix='install-', dir=base / 'tmp') as temporary:
+        stage = Path(temporary)
+        print('Extracting Flutter ' + version, flush=True)
+        with tarfile.open(archive, 'r:xz') as source:
+            source.extractall(stage, filter='data')
+        content = stage / 'flutter'
+        if not ready(content) or git(content, 'rev-parse', 'HEAD') != revision:
+            raise RuntimeError('unexpected Flutter SDK archive layout or revision')
+        environment = dict(os.environ, FLUTTER_ROOT=str(content))
+        print('Validating Flutter SDK (first startup may fetch tool dependencies)', flush=True)
+        check = subprocess.run([str(content / 'bin/flutter'), '--version', '--machine'],
+                               env=environment, text=True, capture_output=True, timeout=180)
+        if check.returncode or json.loads(check.stdout).get('frameworkVersion') != version:
+            raise RuntimeError('Flutter SDK validation failed: ' + check.stderr[-2000:])
+        if busy():
+            print('Flutter started during download; update postponed. Retry desk update flutter.', file=sys.stderr)
+            return
+        # Recheck local work immediately before replacing an existing SDK.
+        if sdk.exists() and (git(sdk, 'status', '--porcelain') or git(sdk, 'rev-parse', 'HEAD') != head):
+            raise RuntimeError('Flutter SDK changed during download; existing SDK kept')
+        backup_root = Path(tempfile.mkdtemp(prefix='previous-', dir=base / 'tmp'))
+        backup = backup_root / 'sdk'
+        if sdk.exists():
+            sdk.rename(backup)
+        try:
+            content.rename(sdk)
+        except OSError:
+            if backup.exists():
+                try:
+                    backup.rename(sdk)
+                except OSError as error:
+                    raise RuntimeError('SDK replacement failed; previous SDK preserved at ' + str(backup)) from error
+            backup_root.rmdir()
+            raise
+        marker.write_text(json.dumps({'version': version, 'hash': revision}))
+        (base / '.installed-version').write_text(version + '\n')
+        shutil.rmtree(backup_root)
+    archive.unlink(missing_ok=True)
+    print('Flutter ' + version + ' installed. Run flutter doctor for platform prerequisites.', flush=True)
+
+
+try:
+    main()
+except (OSError, ValueError, KeyError, RuntimeError, tarfile.TarError, subprocess.SubprocessError) as error:
+    sys.exit('Flutter setup failed: ' + str(error))
+FLUTTER_INSTALLER
+)
+
+
+launch_flutter() (
+  local executable=$1
+  shift
+  if ! flutter_ready; then
+    if [ "${PREPARE_ON_LAUNCH:-1}" != 1 ]; then
+      fail "Flutter is not installed. Use 'desk install flutter'."
+      return 1
+    fi
+    with_lock_wait flutter prepare_flutter_unlocked || return 1
+  fi
+  flutter_environment || return 1
+  exec "$FLUTTER_ROOT/bin/$executable" "$@"
+)
+
+
+# -------------------------------------------------------------------
 # Preparation
 # -------------------------------------------------------------------
 
@@ -2387,6 +2677,19 @@ prepare_android() {
 }
 
 
+prepare_flutter_unlocked() {
+  install_flutter || return 1
+  flutter_ready || return 1
+  write_wrapper flutter flutter || return 1
+  write_wrapper dart dart
+}
+
+
+prepare_flutter() {
+  with_lock_wait flutter prepare_flutter_unlocked
+}
+
+
 prepare_all() {
   local failed=0
   local program number=0
@@ -2407,6 +2710,7 @@ prepare_all() {
       codex) prepare_codex || failed=1 ;;
       claude) prepare_claude || failed=1 ;;
       android) prepare_android || failed=1 ;;
+      flutter) prepare_flutter || failed=1 ;;
     esac
   done
 
@@ -2424,6 +2728,7 @@ program_executable() {
     brave) printf '%s/brave/brave\n' "$APPS" ;;
     codex|claude) native_cli_path "$1" ;;
     android) printf '%s/android/sdk/emulator/emulator\n' "$APPS" ;;
+    flutter) printf '%s/flutter/sdk/bin/flutter\n' "$APPS" ;;
     *) return 2 ;;
   esac
 }
@@ -2432,6 +2737,7 @@ program_executable() {
 program_installed() {
   local executable
   if [ "$1" = android ]; then android_ready; return $?; fi
+  if [ "$1" = flutter ]; then flutter_ready; return $?; fi
   executable=$(program_executable "$1") || return $?
   [ -x "$executable" ]
 }
@@ -2443,6 +2749,7 @@ program_ready() {
     brave) brave_ready ;;
     codex|claude) native_cli_ready "$1" ;;
     android) android_ready ;;
+    flutter) flutter_ready ;;
     *) return 2 ;;
   esac
 }
@@ -2488,6 +2795,7 @@ update_installed_programs() {
       codex) with_lock_wait codex install_codex || failed=1 ;;
       claude) with_lock_wait claude install_claude || failed=1 ;;
       android) with_lock_wait android install_android || failed=1 ;;
+      flutter) with_lock_wait flutter install_flutter || failed=1 ;;
     esac
   done
   if [ "$failed" = 0 ]; then
@@ -2622,6 +2930,10 @@ open_app() {
       with_lock_wait android launch_android_unlocked "$@"
       ;;
 
+    flutter|dart)
+      launch_flutter "$name" "$@"
+      ;;
+
     *) fail "Unknown program: $name"; return 2 ;;
   esac
 }
@@ -2698,7 +3010,7 @@ find_launch_terminal() {
 }
 
 
-open_ai_terminal() {
+open_terminal_program() {
   local program=$1
   local log="$STATE_DIR/open-$program.log"
   info "Opening $(label "$program") in a new terminal (log: $(pretty "$log"))"
@@ -2711,7 +3023,7 @@ open_programs() {
   local -a PICKER_PROGRAMS=()
   local PICKER_TITLE='Choose programs to open' PICKER_ACTION=open PICKER_COMMAND=open
   local PREPARE_ON_LAUNCH=0
-  local program ai_count=0 failed=0
+  local program terminal_count=0 failed=0
   mapfile -t available < <(installed_programs)
   if [ "${#available[@]}" = 0 ] && [ "$#" = 0 ]; then
     info "No managed programs installed. Use 'desk install' first."
@@ -2740,11 +3052,11 @@ open_programs() {
       fail "$(label "$program") needs setup. Run 'desk $program' to finish setup first."
       return 1
     fi
-    case "$program" in codex|claude) ai_count=$((ai_count + 1)) ;; esac
+    case "$program" in codex|claude|flutter) terminal_count=$((terminal_count + 1)) ;; esac
   done
-  if [ "$ai_count" -gt 1 ] && ! find_launch_terminal; then
-    fail 'Opening both AI tools needs a graphical session and a terminal emulator.'
-    printf "Open one at a time instead: desk ai  or  desk claude\n" >&2
+  if [ "$terminal_count" -gt 1 ] && ! find_launch_terminal; then
+    fail 'Opening multiple terminal tools needs a graphical session and a terminal emulator.'
+    printf "Open one at a time instead: desk ai, desk claude, or desk flutter doctor\n" >&2
     return 1
   fi
   with_lock_wait core save_programs_to "$OPEN_PROGRAMS_FILE" || return 1
@@ -2763,12 +3075,12 @@ open_programs() {
   [ "$failed" = 0 ] || return "$failed"
   for program in "${PROGRAMS[@]}"; do
     case "$program" in
-      codex|claude)
-        if [ "$ai_count" = 1 ]; then
-          open_app "$program"
+      codex|claude|flutter)
+        if [ "$terminal_count" = 1 ]; then
+          if [ "$program" = flutter ]; then open_app flutter doctor; else open_app "$program"; fi
           return $?
         else
-          open_ai_terminal "$program" || failed=1
+          open_terminal_program "$program" || failed=1
         fi
         ;;
     esac
@@ -2855,6 +3167,12 @@ shell_prepare_component() {
       else
         rc=$?
       fi
+      ;;
+
+    flutter)
+      # Avoid automatic multi-gigabyte SDK refreshes on shell startup.
+      if flutter_ready; then return 0; fi
+      if with_lock_try flutter prepare_flutter_unlocked; then rc=0; else rc=$?; fi
       ;;
   esac
 
@@ -3004,6 +3322,11 @@ native_apps_running() {
     running=1
   fi
 
+  if flutter_running; then
+    warn 'Flutter/Dart tools are running. Close them first.'
+    running=1
+  fi
+
   [ "$running" = 0 ]
 }
 
@@ -3065,6 +3388,9 @@ clean_reset_unlocked() {
     "$GOINFRE/cache/claude" \
     "$GOINFRE/cache/vscode-vsix"
 
+  rm -rf "$APPS/flutter/sdk"
+  rm -f "$APPS/flutter/.installed-version" "$APPS/flutter/.desk-release.json"
+
   if managed_wrapper "$BIN_DIR/code"; then
     rm -f "$BIN_DIR/code"
   fi
@@ -3084,6 +3410,9 @@ clean_reset_unlocked() {
   if managed_wrapper "$BIN_DIR/android"; then
     rm -f "$BIN_DIR/android"
   fi
+
+  if managed_wrapper "$BIN_DIR/flutter"; then rm -f "$BIN_DIR/flutter"; fi
+  if managed_wrapper "$BIN_DIR/dart"; then rm -f "$BIN_DIR/dart"; fi
 
   rm -f \
     "$DATA_DIR/applications/code-native.desktop" \
@@ -3124,6 +3453,7 @@ clean_reset() {
   local held_brave=0
   local held_codex=0
   local held_claude=0
+  local held_flutter=0
 
   printf '%bReset 42-desk?%b\n\n' \
     "$C_BOLD" \
@@ -3134,7 +3464,8 @@ clean_reset() {
   printf '  • desk-managed Brave\n'
   printf '  • desk-managed Codex CLI and its cache\n'
   printf '  • desk-managed Claude Code and its cache\n'
-  printf '  • code/brave/codex/claude/android wrappers\n'
+  printf '  • Flutter SDK (its configuration and Pub/Gradle caches are kept)\n'
+  printf '  • code/brave/codex/claude/android/flutter/dart wrappers\n'
   printf '  • desktop launchers\n'
   printf '  • first-run/update state\n\n'
 
@@ -3212,7 +3543,12 @@ clean_reset() {
     fi
   fi
 
+  if [ "$rc" = 0 ]; then
+    if lock_try_acquire flutter; then held_flutter=1; else rc=1; fi
+  fi
+
   if [ "$rc" != 0 ]; then
+    [ "$held_flutter" = 0 ] || lock_release flutter
     [ "$held_claude" = 0 ] || lock_release claude
     [ "$held_codex" = 0 ] || lock_release codex
     [ "$held_brave" = 0 ] || lock_release brave
@@ -3229,6 +3565,7 @@ clean_reset() {
     rc=$?
   fi
 
+  lock_release flutter
   lock_release claude
   lock_release codex
   lock_release brave
@@ -3260,6 +3597,7 @@ show_status() {
       codex) executable="$APPS/codex/bin/codex"; version="$APPS/codex/.installed-version" ;;
       claude) executable="$APPS/claude/claude"; version="$APPS/claude/.installed-version" ;;
       android) executable="$APPS/android/sdk/emulator/emulator"; version="$APPS/android/.installed-version" ;;
+      flutter) executable="$APPS/flutter/sdk/bin/flutter"; version="$APPS/flutter/.installed-version" ;;
     esac
     if [ -x "$executable" ]; then
       state=installed
@@ -3267,6 +3605,7 @@ show_status() {
         code) vscode_ready || state='needs import' ;;
         brave) brave_ready || state='needs import' ;;
         android) android_ready || state='needs setup' ;;
+        flutter) flutter_ready || state='needs setup' ;;
       esac
     fi
     version=$(cat "$version" 2>/dev/null || printf '%s' '-')
@@ -3282,6 +3621,7 @@ show_status() {
   printf '  Codex cache  %s\n' "$(pretty "$GOINFRE/cache/codex")"
   printf '  Claude cache %s\n' "$(pretty "$GOINFRE/cache/claude")"
   printf '  Android      %s\n' "$(pretty "$APPS/android")"
+  printf '  Flutter      %s\n' "$(pretty "$APPS/flutter")"
   printf '\nInstall/change programs: desk install\n'
   printf 'Prepare/update selection: desk p\n'
   printf 'Open installed programs: desk   |   Update installed programs: desk update\n'
@@ -3368,7 +3708,7 @@ main() {
     _open)
       local PREPARE_ON_LAUNCH=0
       [ "$#" -gt 0 ] || return 2
-      open_app "$@"
+      if [ "$#" = 1 ] && [ "$1" = flutter ]; then open_app flutter doctor; else open_app "$@"; fi
       ;;
 
 
@@ -3394,6 +3734,11 @@ main() {
 
     android|emulator)
       open_app android "$@"
+      ;;
+
+    flutter|dart)
+      with_lock_wait core install_self || return 1
+      open_app "$cmd" "$@"
       ;;
 
     _android-run)

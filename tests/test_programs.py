@@ -520,7 +520,7 @@ normalize_programs all
 printf '%s\\n' "${PROGRAMS[@]}" > "$DESK_FIXTURE/all-programs"
 ''')
         self.assertEqual((self.root / "prepared").read_text(), "claude\n")
-        self.assertEqual((self.root / "all-programs").read_text(), "code\nbrave\ncodex\nclaude\nandroid\n")
+        self.assertEqual((self.root / "all-programs").read_text(), "code\nbrave\ncodex\nclaude\nandroid\nflutter\n")
 
     def test_clean_preserves_claude_account_data_and_cleans_its_cache(self):
         self.run_desk("install", "claude")
@@ -646,7 +646,7 @@ with (Path(os.environ['DESK_FIXTURE']) / 'opened').open('a') as record:
         self.env.pop("WAYLAND_DISPLAY", None)
         result = self.run_desk("open", "all", check=False)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("Opening both AI tools needs", result.stderr)
+        self.assertIn("Opening multiple terminal tools needs", result.stderr)
         self.assertFalse((self.root / "launch.json").exists())
         self.assertFalse((self.state / "open-programs").exists())
 

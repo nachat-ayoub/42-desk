@@ -226,7 +226,7 @@ root = pathlib.Path(os.environ['DESK_FIXTURE'])
         installer = helpers.DESK.parent / 'install.sh'
         result = subprocess.run([str(installer)], env=self.env, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('2.7.0', (self.home / '.local/bin/desk').read_text())
+        self.assertIn(helpers.DESK.read_text().split('VERSION="', 1)[1].split('"', 1)[0], (self.home / '.local/bin/desk').read_text())
         self.assertFalse((self.root / 'requests').exists())
         self.assertFalse(list((self.storage / 'cache/desk/tmp').iterdir()))
 

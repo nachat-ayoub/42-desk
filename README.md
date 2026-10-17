@@ -5,9 +5,9 @@
 `42-desk` is a small no-sudo workstation bootstrapper designed for shared
 42 / 1337 Linux machines.
 
-It installs your choice of native **VS Code, Brave, Codex CLI, Claude Code, and Android 11 Google Play** inside
+It installs your choice of native **VS Code, Brave, Codex CLI, Claude Code, Android 11 Google Play, and Flutter** inside
 `goinfre`. It migrates existing editor/browser profiles, creates familiar
-`code`, `brave`, `codex`, `claude`, and `android` commands for the selected programs.
+`code`, `brave`, `codex`, `claude`, `android`, `flutter`, and `dart` commands for the selected programs.
 Choose what to open with `desk`, and update installed programs with `desk update`.
 Shell startup also checks your saved installation selection for updates.
 
@@ -19,6 +19,7 @@ Shell startup also checks your saved installation selection for updates.
 - Native Brave
 - Native Codex CLI and Claude Code (no Node.js/npm required)
 - Android 11 with Google Play Store and a 1080×2424 Pixel 9 display profile
+- Stable Flutter SDK with bundled Dart and Pub/Gradle caches in `goinfre`
 - Separate checkbox pickers for installation and launching
 - Explicit updates for installed programs
 - AI CLI caches and temporary files in `goinfre`, plus Codex logs
@@ -77,7 +78,7 @@ From this checkout on the new machine, run:
 ./desk install all
 ```
 
-This installs all five tools without opening them, saves your selection, and refreshes
+This installs all six tools without opening them, saves your selection, and refreshes
 the managed `desk` command. Then run `desk` to choose what to open, or `desk android`
 to start Android. Repeating setup reuses completed Android downloads and existing
 device data. Network access is needed for missing packages, and Linux KVM access is
@@ -94,7 +95,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.7.0) and `desk st`.
+the installed command. Verify with `desk --version` (2.8.0) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -114,6 +115,7 @@ Choose your programs
    [ ] Codex CLI
    [ ] Claude Code
    [ ] Android 11 Google Play
+   [ ] Flutter SDK
 
 Up/Down or j/k: move   Space: toggle
 Enter: install   a: all   n: none   Esc/q: cancel
@@ -192,12 +194,13 @@ On a fresh machine, `desk` points you to `desk install`.
 
 VS Code and Brave start independently of the launching shell. Selecting one AI
 tool runs it in the current terminal after any selected desktop apps start.
-Selecting both Codex and Claude opens each in a separate terminal window. This
+Selecting multiple terminal tools (Codex, Claude, or Flutter) opens each in a separate terminal window. This
 requires a graphical session and a terminal emulator such as GNOME Terminal,
 Konsole, Xfce Terminal, Kitty, Alacritty, or xterm. `TERMINAL` can name a preferred
 terminal executable (without extra shell flags). Launcher errors are recorded
-in `~/.config/desk/open-codex.log` and `open-claude.log`. If a graphical terminal
-is unavailable, open the AI tools separately with `desk ai` and `desk claude`.
+in `~/.config/desk/open-codex.log`, `open-claude.log`, or `open-flutter.log`. If a graphical terminal
+is unavailable, open terminal tools separately with `desk ai`, `desk claude`, or
+`desk flutter doctor`. Choosing Flutter in the launch picker runs `flutter doctor`.
 
 For noninteractive use, supply program names, e.g. `desk open code brave`.
 The argument-free launch picker requires an interactive terminal.
@@ -293,6 +296,78 @@ or directly:
 brave https://github.com
 ```
 
+### Flutter SDK and Dart
+
+```bash
+desk install flutter           # Install Flutter stable, including Dart
+desk install android flutter   # Select the emulator and Flutter together
+flutter --version
+flutter doctor
+flutter devices
+dart --version
+desk flutter create my_app
+desk flutter run -d emulator-5584
+desk update flutter            # Check/install a newer stable SDK
+desk open flutter              # Run flutter doctor in the launch flow
+```
+
+Flutter is the sixth selectable program. `desk install all` includes it.
+Installation uses the current stable Linux archive listed in Flutter's official
+release manifest on `storage.googleapis.com`. Desk verifies its SHA-256 checksum
+and Git revision, safely extracts it, and validates `flutter --version --machine`
+before replacing an older SDK. Nothing is opened automatically. Repeated setup
+and shell maintenance reuse an installed SDK without contacting the release server;
+use `desk update flutter` to check for a new stable release.
+
+Prerequisites: Linux, `curl`, `git`, `python3`, `tar`, `xz`, `unzip`, and `zip`,
+plus at least **8 GB free** for downloading and staging the SDK. Python must
+provide `tarfile.data_filter` (Python 3.12 or a security-updated older release).
+Linux x86-64 is supported; ARM64 works only when the official stable manifest
+offers a matching archive. Projects and target-platform build dependencies are
+not installed by the Flutter SDK entry. `flutter doctor` reports those separately.
+
+Files and default runtime caches live beneath `$GOINFRE/apps/flutter`:
+
+```text
+sdk/             Flutter checkout, bundled Dart, and Flutter engine cache
+cache/pub/       PUB_CACHE
+cache/gradle/    GRADLE_USER_HOME (downloads and user Gradle settings)
+config/          Flutter/Dart configuration for managed commands
+cache/xdg/       Other runtime caches
+tmp/             Download/extraction and runtime temporary files
+downloads/       Release metadata and in-progress SDK archives
+```
+
+Completed SDK archives are removed after installation. Explicit `PUB_CACHE` and
+`GRADLE_USER_HOME` bindings are respected. Existing home-directory Flutter settings
+are left intact and may retain precedence in Flutter itself. After installation,
+open a new terminal or reload your shell configuration to expose `FLUTTER_ROOT`
+and default cache bindings to tools launched from that shell. The wrappers apply
+the managed runtime environment immediately. If an existing unmanaged `flutter`
+or `dart` command takes precedence, use `desk flutter ...` or `desk dart ...`.
+For VS Code, choose `$GOINFRE/apps/flutter/sdk` as the Flutter SDK if detection
+requires an explicit path; the Flutter/Dart editor extensions are separate.
+
+**Android integration:** when no external `ANDROID_HOME` or `ANDROID_SDK_ROOT`
+is specified, Flutter reuses the managed SDK at `$GOINFRE/apps/android/sdk`.
+Its AVD state and ADB connection use the existing port **5038**, so Flutter can
+find the desk-managed emulator after it has booted. Explicit external SDK or ADB
+bindings are preserved. Start the emulator with `desk android`, then check
+`flutter devices`.
+
+The Android entry supplies an emulator, ADB, and an API 30 image. It does not
+supply Android SDK command-line tools, build-tools, all SDK platforms, or a JDK.
+Android app builds need those additional prerequisites and accepted Android SDK
+licences; use `flutter doctor` to diagnose them. The emulator's API 30 image does
+not replace the SDK platform required to compile a Flutter app. Desk does not
+automatically accept licences or install system packages.
+
+Updates postpone replacement while Flutter/Dart tools or IDE analysis servers
+are active. Local SDK source changes or unrecognized Git revisions are preserved
+and block replacement. `desk clean` removes the managed SDK and Flutter/Dart
+wrappers, while keeping its configuration and Pub/Gradle caches. Project folders
+outside the SDK are unaffected.
+
 ### Codex CLI
 
 ```bash
@@ -346,7 +421,7 @@ desk choose                # Alias for the same picker
 desk install code codex    # Save exactly this selection and prepare it
 desk install brave         # Browser only
 desk install codex claude   # Both terminal AI tools
-desk install all           # All four programs
+desk install all           # All six programs
 desk install none          # Disable automatic program preparation
 desk p                     # Prepare/update the saved installation selection
 desk update                # Update all currently installed programs
@@ -399,6 +474,8 @@ desk c [ARGS]        open VS Code
 desk b [ARGS]        open Brave
 desk ai [ARGS]       run Codex CLI in this terminal
 desk claude [ARGS]   run Claude Code in this terminal
+desk android [ARGS]  open the managed Android emulator
+desk flutter [ARGS]  run Flutter (includes Dart)
 desk install [APPS]  choose, save, and prepare programs
 desk p               prepare/update selected programs
 desk s [c|b]         re-import profile data
@@ -518,6 +595,7 @@ Each program has a separate directory lock, alongside the core and first-run loc
 ~/.config/desk/locks/brave.lock/
 ~/.config/desk/locks/codex.lock/
 ~/.config/desk/locks/claude.lock/
+~/.config/desk/locks/flutter.lock/
 ~/.config/desk/locks/core.lock/
 ~/.config/desk/locks/first-run.lock/
 ```
@@ -536,6 +614,8 @@ Applications normally live in:
 /goinfre/$USER/apps/brave
 /goinfre/$USER/apps/codex
 /goinfre/$USER/apps/claude
+/goinfre/$USER/apps/android
+/goinfre/$USER/apps/flutter
 ```
 
 If `/goinfre` is unavailable, `desk` falls back to:
@@ -558,6 +638,8 @@ Wrappers:
 ~/.local/bin/codex
 ~/.local/bin/claude
 ~/.local/bin/android
+~/.local/bin/flutter
+~/.local/bin/dart
 ```
 
 ### Codex cache and persistent data
@@ -645,7 +727,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.7.0
+42-desk 2.8.0
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI
@@ -656,6 +738,7 @@ Example:
   Codex CLI    yes       installed    ...
   Claude Code  no        not installed -
   Android 11 Google Play no not installed -
+  Flutter SDK   no        not installed -
 
   Update log   ~/.config/desk/last-run.log
   Codex cache  /goinfre/you/cache/codex
@@ -695,6 +778,7 @@ desk clean
 - keeps the shell hook installed
 - keeps installation and launch preferences
 - keeps Codex and Claude credentials, configuration, and sessions
+- removes Flutter SDK and wrappers, keeping Flutter configuration and Pub/Gradle caches
 
 After the clean succeeds:
 
@@ -779,7 +863,7 @@ State:
 ## Desktop launchers
 
 `42-desk` creates user desktop entries for selected VS Code and Brave installations.
-Codex and Claude run in the terminal and have no desktop launchers.
+Codex, Claude, and Flutter run in the terminal and have no desktop launchers.
 
 The Brave entry appears as:
 
@@ -807,7 +891,8 @@ No root access is required.
 
 CLI regression checks (no desktop session, network, or application download required).
 They cover installation and launch checkboxes, terminal restoration, separate
-saved preferences, installed-only updates, current/newer version handling,
+saved preferences, installed-only updates, Flutter SDK checksum/revision validation and Android ADB routing,
+current/newer version handling,
 installation integrity, cache routing, terminal argument/input/exit handling,
 and Brave launch behavior:
 
