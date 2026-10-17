@@ -408,7 +408,7 @@ main open brave codex
     def test_checklist_all_checks_every_program_before_cancel(self):
         code, output = self.interact("install", [b"aq"])
         self.assertEqual(code, 130, output.decode())
-        for title in ("VS Code", "Brave", "Codex CLI", "Claude Code"):
+        for title in ("VS Code", "Brave", "Codex CLI", "Claude Code", "Android 11 Google Play"):
             self.assertIn(f"[x] {title}".encode(), output)
         self.assertFalse((self.state / "programs").exists())
         self.assertFalse((self.root / "requests").exists())
@@ -520,7 +520,7 @@ normalize_programs all
 printf '%s\\n' "${PROGRAMS[@]}" > "$DESK_FIXTURE/all-programs"
 ''')
         self.assertEqual((self.root / "prepared").read_text(), "claude\n")
-        self.assertEqual((self.root / "all-programs").read_text(), "code\nbrave\ncodex\nclaude\n")
+        self.assertEqual((self.root / "all-programs").read_text(), "code\nbrave\ncodex\nclaude\nandroid\n")
 
     def test_clean_preserves_claude_account_data_and_cleans_its_cache(self):
         self.run_desk("install", "claude")

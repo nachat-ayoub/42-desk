@@ -30,7 +30,17 @@ mkdir -p \
   "$CONF_DIR/desk"
 
 
-tmp=$(mktemp)
+if [ -n "${GOINFRE:-}" ]; then
+  storage=$GOINFRE
+elif [ -d /goinfre ]; then
+  storage="/goinfre/${USER:-$(id -un)}"
+elif [ -d "$HOME/goinfre" ]; then
+  storage=$(readlink -f "$HOME/goinfre")
+else
+  storage="$HOME/.local/opt"
+fi
+mkdir -p "$storage/cache/desk/tmp"
+tmp=$(mktemp "$storage/cache/desk/tmp/installer.XXXXXX")
 
 trap \
   'rm -f "$tmp"' \
@@ -43,10 +53,15 @@ printf \
   "$R"
 
 
-curl \
-  -fsSL \
-  "$URL" \
-  -o "$tmp"
+local_desk=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+  local_desk="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/desk"
+fi
+if [ -n "$local_desk" ] && [ -f "$local_desk" ]; then
+  cp -- "$local_desk" "$tmp"
+else
+  curl -fsSL "$URL" -o "$tmp"
+fi
 
 
 # Never install invalid shell code.
@@ -72,10 +87,11 @@ printf \
 
 
 printf '\n'
-printf 'Choose VS Code, Brave, Codex CLI, Claude Code, or any combination.\n'
+printf 'Choose VS Code, Brave, Codex CLI, Claude Code, Android 11 Google Play, or any combination.\n'
 printf 'New installations show a checkbox picker in your next terminal.\n\n'
 printf 'Open the picker now: ~/.local/bin/desk install\n'
 printf 'Without prompts: ~/.local/bin/desk install codex claude\n'
+printf 'Install all five tools: ~/.local/bin/desk install all\n'
 printf 'After installation, choose what to open: ~/.local/bin/desk\n'
 printf 'Update installed programs: ~/.local/bin/desk update\n\n'
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.6.0"
+VERSION="2.7.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -42,7 +42,7 @@ PROGRAMS_FILE="$STATE_DIR/programs"
 OPEN_PROGRAMS_FILE="$STATE_DIR/open-programs"
 # Existing installations keep their original two-program selection.
 PROGRAMS=(code brave)
-ALL_PROGRAMS=(code brave codex claude)
+ALL_PROGRAMS=(code brave codex claude android)
 PICKER_PROGRAMS=("${ALL_PROGRAMS[@]}")
 
 AUTO_CHECK_SECONDS=$((12 * 60 * 60))
@@ -187,6 +187,7 @@ label() {
     code) echo "VS Code" ;;
     codex) echo "Codex CLI" ;;
     claude) echo "Claude Code" ;;
+    android) echo "Android 11 Google Play" ;;
     *) echo "$1" ;;
   esac
 }
@@ -217,6 +218,7 @@ usage() {
   printf '  desk b [ARGS]        open Brave\n'
   printf '  desk ai [ARGS]       run Codex CLI in this terminal\n'
   printf '  desk claude [ARGS]   run Claude Code in this terminal\n'
+  printf '  desk android [ARGS] open Android 11 Google Play (Pixel 9 display)\n'
   printf '  desk p               prepare/update selected programs\n'
   printf '  desk s [c|b]         re-import profile data\n'
   printf '  desk x               close old Flatpak/Snap apps\n'
@@ -227,8 +229,8 @@ usage() {
   printf '%bDirect%b  code .   brave [URL]\n' \
     "$C_BOLD" "$C_RESET"
 
-  printf '          codex [ARGS]   claude [ARGS]\n\n'
-  printf 'Programs: code, brave, codex, claude, all, none\n'
+  printf '          codex [ARGS]   claude [ARGS]   android [ARGS]\n\n'
+  printf 'Programs: code, brave, codex, claude, android, all, none\n'
   printf 'Examples: desk install code codex   |   desk install\n'
   printf 'Deselecting a program leaves its installation and data intact.\n'
 
@@ -252,7 +254,7 @@ selected() {
 
 normalize_programs() {
   local token word
-  local code=0 brave=0 codex=0 claude=0 none=0
+  local code=0 brave=0 codex=0 claude=0 android=0 none=0
   local -a words=()
   for token in "$@"; do
     read -r -a words <<< "${token//,/ }"
@@ -262,17 +264,18 @@ normalize_programs() {
         b|brave) brave=1 ;;
         ai|codex) codex=1 ;;
         cc|claude|claude-code) claude=1 ;;
-        all) code=1; brave=1; codex=1; claude=1 ;;
+        android|emulator) android=1 ;;
+        all) code=1; brave=1; codex=1; claude=1; android=1 ;;
         none) none=1 ;;
-        *) fail "Unknown program: $word. Choose code, brave, codex, claude, all, or none."; return 2 ;;
+        *) fail "Unknown program: $word. Choose code, brave, codex, claude, android, all, or none."; return 2 ;;
       esac
     done
   done
-  if [ "$none" = 1 ] && [ "$((code + brave + codex + claude))" != 0 ]; then
+  if [ "$none" = 1 ] && [ "$((code + brave + codex + claude + android))" != 0 ]; then
     fail "Use 'none' on its own."
     return 2
   fi
-  if [ "$none" = 0 ] && [ "$((code + brave + codex + claude))" = 0 ]; then
+  if [ "$none" = 0 ] && [ "$((code + brave + codex + claude + android))" = 0 ]; then
     fail "Choose at least one program, or 'none'."
     return 2
   fi
@@ -281,6 +284,7 @@ normalize_programs() {
   [ "$brave" = 0 ] || PROGRAMS+=(brave)
   [ "$codex" = 0 ] || PROGRAMS+=(codex)
   [ "$claude" = 0 ] || PROGRAMS+=(claude)
+  [ "$android" = 0 ] || PROGRAMS+=(android)
   return 0
 }
 
@@ -351,7 +355,7 @@ import tty
 
 title, action = sys.argv[1:3]
 separator = sys.argv.index("--", 3)
-labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code"}
+labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play"}
 programs = [(name, labels[name]) for name in sys.argv[3:separator]]
 chosen = set(sys.argv[separator + 1:]).intersection(name for name, _ in programs)
 current = 0
@@ -490,6 +494,7 @@ show_next_steps() {
   selected brave && printf '  Brave      brave [URL]\n'
   selected codex && printf '  Codex CLI  codex   (sign in on first use)\n'
   selected claude && printf '  Claude     claude  (sign in on first use)\n'
+  selected android && printf '  Android    android  (Google Play, 1080x2424 display)\n'
   printf '\nOpen programs: desk   |   Update installed programs: desk update\n'
   printf '\nChange programs anytime: desk install\n'
 }
@@ -1749,6 +1754,7 @@ write_launchers() {
   if selected brave; then write_wrapper brave brave || return 1; fi
   if selected codex; then write_wrapper codex codex || return 1; fi
   if selected claude; then write_wrapper claude claude || return 1; fi
+  if selected android; then write_wrapper android android || return 1; fi
 
   icon_vscode=$(app_root "$OLD_VSCODE")
   icon_brave=$(app_root "$OLD_BRAVE")
@@ -1791,6 +1797,19 @@ Icon=$icon_brave
 Categories=Network;WebBrowser;
 MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
 StartupWMClass=$BRAVE_WM_CLASS
+EOF
+  fi
+
+  if selected android; then
+    cat > "$DATA_DIR/applications/android-desk.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Android 11 Google Play
+Comment=Android 11 with Google Play and Pixel 9 display, managed by 42-desk
+Exec="$exec_path" android
+Icon=phone
+Categories=Development;Emulator;
+Terminal=false
 EOF
   fi
 
@@ -1954,6 +1973,323 @@ with_lock_try() {
 
 
 # -------------------------------------------------------------------
+# Android 11 Google Play (all persistent and temporary files in goinfre)
+# -------------------------------------------------------------------
+
+android_environment() {
+  ANDROID_BASE="$APPS/android"
+  export ANDROID_HOME="$ANDROID_BASE/sdk" ANDROID_SDK_ROOT="$ANDROID_BASE/sdk"
+  export ANDROID_USER_HOME="$ANDROID_BASE/state/.android"
+  export ANDROID_EMULATOR_HOME="$ANDROID_USER_HOME" ANDROID_SDK_HOME="$ANDROID_BASE/state"
+  export ANDROID_AVD_HOME="$ANDROID_BASE/avd"
+  export XDG_CONFIG_HOME="$ANDROID_BASE/config" XDG_DATA_HOME="$ANDROID_BASE/data"
+  export XDG_CACHE_HOME="$ANDROID_BASE/cache" XDG_STATE_HOME="$ANDROID_BASE/state"
+  export TMPDIR="$ANDROID_BASE/tmp" TMP="$ANDROID_BASE/tmp" TEMP="$ANDROID_BASE/tmp"
+  export MESA_SHADER_CACHE_DIR="$ANDROID_BASE/cache/mesa"
+  export __GL_SHADER_DISK_CACHE_PATH="$ANDROID_BASE/cache/nvidia"
+  export ANDROID_ADB_SERVER_PORT=5038 ADB_SERVER_PORT=5038
+  export ANDROID_EMULATOR_METRICS_COLLECTION=false ANDROID_EMULATOR_DISABLE_CRASH_REPORTING=1
+  export PYTHONDONTWRITEBYTECODE=1
+  umask 077
+  mkdir -p "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME" "$XDG_CONFIG_HOME" \
+    "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$TMPDIR" "$ANDROID_BASE/logs" "$ANDROID_BASE/downloads"
+}
+
+
+android_ready() {
+  local root="$APPS/android"
+  local entry
+  for entry in system.img userdata.img ramdisk.img kernel-ranchu; do
+    [ -f "$root/sdk/system-images/android-30/google_apis_playstore/x86_64/$entry" ] || return 1
+  done
+  [ -x "$root/sdk/emulator/emulator" ] &&
+    [ -x "$root/sdk/platform-tools/adb" ] &&
+    [ -f "$root/avd/Android_11_Play_Pixel9.avd/config.ini" ] &&
+    [ -f "$root/avd/Android_11_Play_Pixel9.ini" ]
+}
+
+
+android_running() {
+  python3 - "$APPS/android/sdk/emulator/" <<'PY'
+import glob, os, sys
+prefix = os.path.realpath(sys.argv[1]) + '/'
+for link in glob.iglob('/proc/[0-9]*/exe'):
+    try:
+        if os.readlink(link).startswith(prefix):
+            sys.exit(0)
+    except OSError:
+        pass
+sys.exit(1)
+PY
+}
+
+
+install_android() (
+  if [ "$(uname -s)" != Linux ] || [[ "$(uname -m)" != @(x86_64|amd64) ]]; then
+    fail 'Android currently requires an x86_64 Linux workstation.'
+    return 1
+  fi
+  android_environment || return 1
+  if android_ready && [ "${UPDATE_ONLY:-0}" != 1 ]; then
+    printf '11 (API 30, Google Play)\n' > "$ANDROID_BASE/.installed-version"
+    ok 'Android 11 Google Play is ready; reusing the existing SDK and device.'
+    return 0
+  fi
+  if android_running; then
+    if android_ready; then
+      warn 'Android emulator is running; keeping its SDK and image. Close all emulators, then run desk update android.'
+      return 0
+    fi
+    fail 'Close the running Android emulators before finishing Android setup.'
+    return 1
+  fi
+  info 'Preparing Android 11 Google Play (1080x2424, 2 GB RAM)'
+  python3 - "$ANDROID_BASE" "${UPDATE_ONLY:-0}" <<'ANDROID_INSTALLER'
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+import xml.etree.ElementTree as ET
+import zipfile
+
+base = Path(sys.argv[1]).resolve()
+update = sys.argv[2] == '1'
+repo = 'https://dl.google.com/android/repository/'
+sdk = base / 'sdk'
+downloads = base / 'downloads'
+image_repo = repo + 'sys-img/google_apis_playstore/'
+image_path = 'system-images;android-30;google_apis_playstore;x86_64'
+image_dir = Path('system-images/android-30/google_apis_playstore/x86_64')
+name = 'Android_11_Play_Pixel9'
+
+
+def fetch(url, target):
+    if urllib.parse.urlparse(url).scheme != 'https':
+        raise RuntimeError('download URL must use HTTPS')
+    part = target.with_name(target.name + '.part')
+    print('Downloading ' + url, flush=True)
+    try:
+        subprocess.run(['curl', '-fL', '--retry', '2', '--connect-timeout', '15',
+                        '--speed-limit', '1024', '--speed-time', '60', url, '-o', str(part)], check=True)
+        part.replace(target)
+    finally:
+        part.unlink(missing_ok=True)
+
+
+def metadata(url, filename):
+    target = downloads / filename
+    fetch(url, target)
+    root = ET.parse(target).getroot()
+    for element in root.iter():
+        element.tag = element.tag.rsplit('}', 1)[-1]
+    return root
+
+
+def choose(root, path):
+    choices = []
+    for package in root.findall('remotePackage'):
+        channel = package.find('channelRef')
+        if package.get('path') != path or package.find('revision/preview') is not None:
+            continue
+        if channel is not None and channel.get('ref') != 'channel-0':
+            continue
+        revision = tuple(int(package.findtext('revision/' + key, '0')) for key in ('major', 'minor', 'micro'))
+        for archive in package.findall('archives/archive'):
+            if archive.findtext('host-os', 'linux') != 'linux':
+                continue
+            if archive.findtext('host-arch', 'x86_64') not in ('x86_64', 'x64'):
+                continue
+            complete = archive.find('complete')
+            if complete is not None:
+                choices.append((revision, package, complete))
+    if not choices:
+        raise RuntimeError('official repository does not offer ' + path)
+    return max(choices, key=lambda item: item[0])
+
+
+def complete_install(destination, required):
+    return all((destination / entry).is_file() for entry in required)
+
+
+def install(root, path, repo_url, destination, required):
+    marker = destination / '.goinfre-package.json'
+    revision, package, archive = choose(root, path)
+    if marker.is_file() and complete_install(destination, required):
+        previous = json.loads(marker.read_text())
+        if previous.get('package') == path and tuple(previous['revision']) >= revision:
+            print('Already current: ' + path, flush=True)
+            return
+    elif destination.exists():
+        raise RuntimeError('unrecognized or incomplete existing package at ' + str(destination) + '; inspect it before retrying')
+    if shutil.disk_usage(base).free < 12 * 1024**3:
+        raise RuntimeError('keep at least 12 GB free in goinfre for Android downloads and extraction')
+    url = urllib.parse.urljoin(repo_url, archive.findtext('url'))
+    if urllib.parse.urlparse(url).hostname != 'dl.google.com':
+        raise RuntimeError('unexpected archive host')
+    target = downloads / Path(urllib.parse.urlparse(url).path).name
+    size = int(archive.findtext('size'))
+    checksum = archive.find('checksum')
+    expected = checksum.text.strip().lower()
+    algorithm = checksum.get('type') or {40: 'sha1', 64: 'sha256'}.get(len(expected))
+    if algorithm not in ('sha1', 'sha256', 'sha512'):
+        raise RuntimeError('unsupported repository checksum')
+
+    def verified():
+        if not target.is_file() or target.stat().st_size != size:
+            return False
+        digest = hashlib.new(algorithm)
+        with target.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.hexdigest() == expected
+
+    if not verified():
+        fetch(url, target)
+    if not verified():
+        target.unlink(missing_ok=True)
+        raise RuntimeError('archive checksum mismatch: ' + path)
+    with tempfile.TemporaryDirectory(prefix='extract-', dir=base / 'tmp') as temporary:
+        stage = Path(temporary)
+        print('Extracting ' + path, flush=True)
+        with zipfile.ZipFile(target) as source:
+            for member in source.infolist():
+                output = (stage / member.filename).resolve()
+                mode = member.external_attr >> 16
+                if not output.is_relative_to(stage) or stat.S_ISLNK(mode):
+                    raise RuntimeError('unsafe ZIP entry: ' + member.filename)
+                source.extract(member, stage)
+                if output.is_file() and mode & 0o777:
+                    output.chmod(mode & 0o777)
+        entries = list(stage.iterdir())
+        if len(entries) != 1 or not entries[0].is_dir():
+            raise RuntimeError('unexpected archive layout')
+        content = entries[0]
+        if not complete_install(content, required):
+            raise RuntimeError('archive is missing required files: ' + path)
+        if path in ('emulator', 'platform-tools'):
+            executable = content / ('emulator' if path == 'emulator' else 'adb')
+            executable.chmod(executable.stat().st_mode | 0o755)
+        (content / '.goinfre-package.json').write_text(json.dumps({
+            'package': path, 'revision': revision, 'url': url}, indent=2))
+        license_ref = package.find('uses-license')
+        if license_ref is not None:
+            for license_element in root.findall('license'):
+                if license_element.get('id') == license_ref.get('ref'):
+                    (content / 'LICENSE.repository.txt').write_text(license_element.text or '')
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        backup = stage / 'previous-installation'
+        if destination.exists():
+            destination.rename(backup)
+        try:
+            content.rename(destination)
+        except OSError:
+            if backup.exists():
+                backup.rename(destination)
+            raise
+    target.unlink()
+
+
+def main():
+    packages = [('emulator', ('emulator',)), ('platform-tools', ('adb',))]
+    needed = [(path, required) for path, required in packages
+              if update or not complete_install(sdk / path, required)]
+    if needed:
+        tools = metadata(repo + 'repository2-1.xml', 'repository.xml')
+        for path, required in needed:
+            install(tools, path, repo, sdk / path, required)
+    required_image = ('system.img', 'userdata.img', 'ramdisk.img', 'kernel-ranchu')
+    if update or not complete_install(sdk / image_dir, required_image):
+        images = metadata(image_repo + 'sys-img2-1.xml', 'images-google_apis_playstore.xml')
+        install(images, image_path, image_repo, sdk / image_dir, required_image)
+    device = base / 'avd' / (name + '.avd')
+    device.mkdir(parents=True, exist_ok=True)
+    config = device / 'config.ini'
+    if not config.exists():
+        values = {
+            'AvdId': name, 'avd.ini.displayname': 'Android 11 Google Play - Pixel 9 display',
+            'avd.ini.encoding': 'UTF-8', 'abi.type': 'x86_64',
+            'image.sysdir.1': str(image_dir) + '/', 'tag.id': 'google_apis_playstore',
+            'tag.display': 'Google Play', 'target': 'android-30', 'PlayStore.enabled': 'true',
+            'hw.cpu.arch': 'x86_64', 'hw.cpu.ncore': 2, 'hw.ramSize': 2048, 'vm.heapSize': 256,
+            'hw.lcd.width': 1080, 'hw.lcd.height': 2424, 'hw.lcd.density': 420,
+            'hw.gpu.enabled': 'yes', 'hw.gpu.mode': 'auto', 'hw.keyboard': 'yes', 'hw.mainKeys': 'no',
+            'hw.audioInput': 'no', 'hw.camera.back': 'none', 'hw.camera.front': 'none',
+            'hw.sdCard': 'no', 'disk.dataPartition.size': '6G', 'disk.cachePartition.size': '64M',
+            'showDeviceFrame': 'no', 'skin.dynamic': 'yes', 'skin.name': '1080x2424',
+            'skin.path': '_no_skin', 'fastboot.forceColdBoot': 'yes', 'fastboot.forceFastBoot': 'no',
+        }
+        config.write_text(''.join(f'{key}={value}\n' for key, value in values.items()))
+    (base / 'avd' / (name + '.ini')).write_text(
+        f'avd.ini.encoding=UTF-8\npath={device}\ntarget=android-30\n')
+    (base / '.installed-version').write_text('11 (API 30, Google Play)\n')
+    print('Android 11 Google Play ready. Open with: desk android', flush=True)
+
+
+try:
+    main()
+except (OSError, ValueError, RuntimeError, ET.ParseError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
+    sys.exit(f'Android setup failed: {error}. Retry with desk install android.')
+ANDROID_INSTALLER
+)
+
+
+launch_android_unlocked() (
+  if ! android_ready; then
+    if [ "${PREPARE_ON_LAUNCH:-1}" != 1 ]; then
+      fail "Android is not installed. Use 'desk install android'."
+      return 1
+    fi
+    prepare_android_unlocked || return 1
+  fi
+  android_environment || return 1
+  if ! "$ANDROID_HOME/emulator/emulator" -accel-check > "$ANDROID_BASE/logs/acceleration-desk.log" 2>&1; then
+    cat "$ANDROID_BASE/logs/acceleration-desk.log" >&2
+    fail 'Android needs KVM hardware acceleration. Ask school IT for access to /dev/kvm.'
+    return 1
+  fi
+  if "$ANDROID_HOME/platform-tools/adb" -P 5038 -s emulator-5584 get-state >/dev/null 2>&1; then
+    info 'Android 11 Google Play is already running.'
+    return 0
+  fi
+  info "Opening Android 11 Google Play (log: $(pretty "$ANDROID_BASE/logs/launch-desk.log"))"
+  start_detached_process "$BIN_DIR/desk" _android-run "$@" \
+    </dev/null > "$ANDROID_BASE/logs/launch-desk.log" 2>&1 &
+)
+
+
+run_android() (
+  android_ready || { fail "Run 'desk install android' first."; return 1; }
+  android_environment || return 1
+  local adb="$ANDROID_HOME/platform-tools/adb"
+  (
+    for ((attempt=0; attempt<120; attempt++)); do
+      booted=$("$adb" -P 5038 -s emulator-5584 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r') || true
+      if [ "$booted" = 1 ]; then
+        for setting in window_animation_scale transition_animation_scale animator_duration_scale; do
+          "$adb" -P 5038 -s emulator-5584 shell settings put global "$setting" 0
+        done
+        exit 0
+      fi
+      sleep 2
+    done
+  ) > "$ANDROID_BASE/logs/boot-settings-desk.log" 2>&1 &
+  local settings_pid=$!
+  trap 'kill "$settings_pid" 2>/dev/null || true' EXIT
+  "$ANDROID_HOME/emulator/emulator" -avd Android_11_Play_Pixel9 \
+    -port 5584 -accel on -cores 2 -memory 2048 \
+    -gpu "${DESK_ANDROID_GPU:-${ANDROID_LIGHT_GPU:-auto}}" -feature -Vulkan \
+    -no-snapshot -no-boot-anim -no-audio -no-metrics \
+    -camera-back none -camera-front none -netspeed full -netdelay none "$@"
+)
+
+
+# -------------------------------------------------------------------
 # Preparation
 # -------------------------------------------------------------------
 
@@ -2039,6 +2375,18 @@ prepare_claude() {
 }
 
 
+prepare_android_unlocked() {
+  install_android || return 1
+  android_ready || return 1
+  write_wrapper android android
+}
+
+
+prepare_android() {
+  with_lock_wait android prepare_android_unlocked
+}
+
+
 prepare_all() {
   local failed=0
   local program number=0
@@ -2058,6 +2406,7 @@ prepare_all() {
       brave) prepare_brave || failed=1 ;;
       codex) prepare_codex || failed=1 ;;
       claude) prepare_claude || failed=1 ;;
+      android) prepare_android || failed=1 ;;
     esac
   done
 
@@ -2074,6 +2423,7 @@ program_executable() {
     code) printf '%s/vscode/bin/code\n' "$APPS" ;;
     brave) printf '%s/brave/brave\n' "$APPS" ;;
     codex|claude) native_cli_path "$1" ;;
+    android) printf '%s/android/sdk/emulator/emulator\n' "$APPS" ;;
     *) return 2 ;;
   esac
 }
@@ -2081,6 +2431,7 @@ program_executable() {
 
 program_installed() {
   local executable
+  if [ "$1" = android ]; then android_ready; return $?; fi
   executable=$(program_executable "$1") || return $?
   [ -x "$executable" ]
 }
@@ -2091,6 +2442,7 @@ program_ready() {
     code) vscode_ready ;;
     brave) brave_ready ;;
     codex|claude) native_cli_ready "$1" ;;
+    android) android_ready ;;
     *) return 2 ;;
   esac
 }
@@ -2135,6 +2487,7 @@ update_installed_programs() {
       brave) with_lock_wait brave install_brave || failed=1 ;;
       codex) with_lock_wait codex install_codex || failed=1 ;;
       claude) with_lock_wait claude install_claude || failed=1 ;;
+      android) with_lock_wait android install_android || failed=1 ;;
     esac
   done
   if [ "$failed" = 0 ]; then
@@ -2262,6 +2615,11 @@ open_app() {
 
     claude)
       launch_claude "$@"
+      ;;
+
+    android)
+      with_lock_wait core install_self || return 1
+      with_lock_wait android launch_android_unlocked "$@"
       ;;
 
     *) fail "Unknown program: $name"; return 2 ;;
@@ -2399,7 +2757,7 @@ open_programs() {
   # Start desktop apps first, before a single AI tool takes over this terminal.
   for program in "${PROGRAMS[@]}"; do
     case "$program" in
-      code|brave) open_app "$program" || failed=1 ;;
+      code|brave|android) open_app "$program" || failed=1 ;;
     esac
   done
   [ "$failed" = 0 ] || return "$failed"
@@ -2483,6 +2841,16 @@ shell_prepare_component() {
 
     claude)
       if with_lock_try claude prepare_claude_unlocked; then
+        rc=0
+      else
+        rc=$?
+      fi
+      ;;
+
+    android)
+      # Keep routine shell startup offline and fast once Android is ready.
+      if android_ready; then return 0; fi
+      if with_lock_try android prepare_android_unlocked; then
         rc=0
       else
         rc=$?
@@ -2713,9 +3081,14 @@ clean_reset_unlocked() {
     rm -f "$BIN_DIR/claude"
   fi
 
+  if managed_wrapper "$BIN_DIR/android"; then
+    rm -f "$BIN_DIR/android"
+  fi
+
   rm -f \
     "$DATA_DIR/applications/code-native.desktop" \
-    "$DATA_DIR/applications/brave-native.desktop"
+    "$DATA_DIR/applications/brave-native.desktop" \
+    "$DATA_DIR/applications/android-desk.desktop"
 
   rm -f \
     "$INITIALIZED" \
@@ -2761,13 +3134,14 @@ clean_reset() {
   printf '  • desk-managed Brave\n'
   printf '  • desk-managed Codex CLI and its cache\n'
   printf '  • desk-managed Claude Code and its cache\n'
-  printf '  • code/brave/codex/claude wrappers\n'
+  printf '  • code/brave/codex/claude/android wrappers\n'
   printf '  • desktop launchers\n'
   printf '  • first-run/update state\n\n'
 
   printf 'Your native profiles will be backed up first.\n'
   printf 'The desk CLI and shell hook will stay installed.\n\n'
   printf 'Program choices and AI tool authentication/configuration are kept.\n\n'
+  printf 'Android SDK, virtual devices, installed apps, and Google sign-in data are kept.\n\n'
 
   if [ -t 0 ]; then
     read -r -p "Continue? [y/N] " answer
@@ -2885,12 +3259,14 @@ show_status() {
       brave) executable="$APPS/brave/brave"; version="$APPS/brave/.installed-version" ;;
       codex) executable="$APPS/codex/bin/codex"; version="$APPS/codex/.installed-version" ;;
       claude) executable="$APPS/claude/claude"; version="$APPS/claude/.installed-version" ;;
+      android) executable="$APPS/android/sdk/emulator/emulator"; version="$APPS/android/.installed-version" ;;
     esac
     if [ -x "$executable" ]; then
       state=installed
       case "$program" in
         code) vscode_ready || state='needs import' ;;
         brave) brave_ready || state='needs import' ;;
+        android) android_ready || state='needs setup' ;;
       esac
     fi
     version=$(cat "$version" 2>/dev/null || printf '%s' '-')
@@ -2905,6 +3281,7 @@ show_status() {
   printf '\n  Update log   %s\n' "$(pretty "$LOG_FILE")"
   printf '  Codex cache  %s\n' "$(pretty "$GOINFRE/cache/codex")"
   printf '  Claude cache %s\n' "$(pretty "$GOINFRE/cache/claude")"
+  printf '  Android      %s\n' "$(pretty "$APPS/android")"
   printf '\nInstall/change programs: desk install\n'
   printf 'Prepare/update selection: desk p\n'
   printf 'Open installed programs: desk   |   Update installed programs: desk update\n'
@@ -3013,6 +3390,14 @@ main() {
 
     claude|cc|claude-code)
       open_app claude "$@"
+      ;;
+
+    android|emulator)
+      open_app android "$@"
+      ;;
+
+    _android-run)
+      run_android "$@"
       ;;
 
     c|code|vscode)

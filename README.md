@@ -5,9 +5,9 @@
 `42-desk` is a small no-sudo workstation bootstrapper designed for shared
 42 / 1337 Linux machines.
 
-It installs your choice of native **VS Code, Brave, Codex CLI, and Claude Code** inside
+It installs your choice of native **VS Code, Brave, Codex CLI, Claude Code, and Android 11 Google Play** inside
 `goinfre`. It migrates existing editor/browser profiles, creates familiar
-`code`, `brave`, `codex`, and `claude` commands for the selected programs.
+`code`, `brave`, `codex`, `claude`, and `android` commands for the selected programs.
 Choose what to open with `desk`, and update installed programs with `desk update`.
 Shell startup also checks your saved installation selection for updates.
 
@@ -18,6 +18,7 @@ Shell startup also checks your saved installation selection for updates.
 - Native VS Code
 - Native Brave
 - Native Codex CLI and Claude Code (no Node.js/npm required)
+- Android 11 with Google Play Store and a 1080×2424 Pixel 9 display profile
 - Separate checkbox pickers for installation and launching
 - Explicit updates for installed programs
 - AI CLI caches and temporary files in `goinfre`, plus Codex logs
@@ -63,8 +64,24 @@ You can also choose immediately:
 ~/.local/bin/desk install all
 ```
 
-The download installer reads `main`. To try a local checkout before publishing,
-run `./desk install` from the repository instead.
+The download installer reads `main`. To install this local checkout before publishing,
+run `./install.sh`; it uses the adjacent `desk` file. You can also run `./desk install` directly.
+
+### All tools on another school machine
+
+Keep this checkout in your school home directory, a USB drive, or your own repository.
+`goinfre` is local to each workstation; its installed applications do not follow you.
+From this checkout on the new machine, run:
+
+```bash
+./desk install all
+```
+
+This installs all five tools without opening them, saves your selection, and refreshes
+the managed `desk` command. Then run `desk` to choose what to open, or `desk android`
+to start Android. Repeating setup reuses completed Android downloads and existing
+device data. Network access is needed for missing packages, and Linux KVM access is
+needed to run Android.
 
 ## Update an existing installation
 
@@ -77,7 +94,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.6.0) and `desk st`.
+the installed command. Verify with `desk --version` (2.7.0) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -96,6 +113,7 @@ Choose your programs
    [x] Brave
    [ ] Codex CLI
    [ ] Claude Code
+   [ ] Android 11 Google Play
 
 Up/Down or j/k: move   Space: toggle
 Enter: install   a: all   n: none   Esc/q: cancel
@@ -183,6 +201,67 @@ is unavailable, open the AI tools separately with `desk ai` and `desk claude`.
 
 For noninteractive use, supply program names, e.g. `desk open code brave`.
 The argument-free launch picker requires an interactive terminal.
+
+### Android 11 with Google Play
+
+```bash
+desk install android       # Choose/install Android without opening it
+desk android               # Launch it (also available as the android command)
+desk open android          # Launch only; never downloads missing packages
+desk update android        # Check SDK and image revisions without opening Android
+```
+
+`android` (alias `emulator`) is a selectable fifth program. `desk install all`
+includes it. The image is Google's official **Android 11 / API 30 Google Play x86_64**
+image, with Play Store and Google Play Services. Sign in inside the emulator yourself.
+Downloads are verified against Google's repository checksums before extraction.
+
+The device uses **1080×2424 resolution, 420 dpi, 2 virtual CPU cores, 2 GB RAM,
+and a 6 GB data partition**. This matches Pixel 9 display resolution while running
+Android 11. Resize the emulator window by dragging its edges. Cameras, audio,
+window animations, and memory snapshots are disabled to reduce resource use.
+On an 8 GB workstation, close other emulators and heavy applications first.
+Usable `/dev/kvm` is required; if access is denied, contact school IT.
+
+Everything Android writes is configured beneath `$GOINFRE/apps/android`:
+
+```text
+sdk/             Shared emulator, ADB, and system images
+avd/             Virtual devices, installed Android apps, and Google sign-in data
+state/.android/  Android settings and ADB keys
+cache/           Application and graphics caches
+config/, data/   App-specific XDG directories
+tmp/, downloads/ Temporary files and verified downloads
+logs/            Emulator and boot logs
+```
+
+Allow **12 GB free during installation/extraction**. Completed ZIP files are removed
+after extraction. Existing standalone `Android_11_Play_Pixel9` devices from this
+setup are reused without resetting data. Android 7 and the older Android 11 Google
+APIs device remain intact. Launch logs are in `logs/launch-desk.log`.
+
+Repeated `desk install android` and normal shell startup reuse a ready installation
+without requesting Android metadata. Use `desk update android` for an explicit
+update; updates are postponed while an emulator using the shared SDK is running. Cancelling
+program selection or deselecting Android never deletes its data. `desk clean` removes
+the Android command/desktop entry but preserves the SDK, images, and virtual devices.
+As with other goinfre data, keep separate backups of anything important.
+
+For graphics problems:
+
+```bash
+DESK_ANDROID_GPU=swiftshader desk android
+```
+
+To stop this device with its private ADB server:
+
+```bash
+"$GOINFRE/apps/android/sdk/platform-tools/adb" -P 5038 -s emulator-5584 emu kill
+```
+
+If `GOINFRE` is not exported in your terminal, replace `$GOINFRE` with the storage
+path printed by `desk st`. Port 5584 is reserved for this device; its ADB server
+uses port 5038. Setup does not install Java, Android Studio, or system packages.
 
 ### VS Code
 
@@ -478,6 +557,7 @@ Wrappers:
 ~/.local/bin/brave
 ~/.local/bin/codex
 ~/.local/bin/claude
+~/.local/bin/android
 ```
 
 ### Codex cache and persistent data
@@ -565,7 +645,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.6.0
+42-desk 2.7.0
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI
@@ -575,6 +655,7 @@ Example:
   Brave        no        not installed -
   Codex CLI    yes       installed    ...
   Claude Code  no        not installed -
+  Android 11 Google Play no not installed -
 
   Update log   ~/.config/desk/last-run.log
   Codex cache  /goinfre/you/cache/codex
@@ -607,6 +688,7 @@ desk clean
 - removes desk-managed Codex CLI and its managed cache
 - removes desk-managed Claude Code and its managed cache
 - removes the managed `code`, `brave`, `codex`, and `claude` wrappers
+- removes the Android wrapper/desktop entry while preserving Android SDK and device data
 - removes desktop launchers
 - removes first-run and update state
 - keeps `desk` itself installed
