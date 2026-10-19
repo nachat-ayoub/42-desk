@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.11.0"
+VERSION="2.12.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -42,7 +42,7 @@ PROGRAMS_FILE="$STATE_DIR/programs"
 OPEN_PROGRAMS_FILE="$STATE_DIR/open-programs"
 # Existing installations keep their original two-program selection.
 PROGRAMS=(code brave)
-ALL_PROGRAMS=(code brave codex claude android flutter hermes codex-desktop claude-desktop hermes-desktop)
+ALL_PROGRAMS=(code brave codex claude android flutter hermes codex-desktop claude-desktop hermes-desktop openmausbot)
 PICKER_PROGRAMS=("${ALL_PROGRAMS[@]}")
 
 AUTO_CHECK_SECONDS=$((12 * 60 * 60))
@@ -191,6 +191,7 @@ label() {
     flutter) echo "Flutter SDK" ;;
     hermes) echo "Hermes Agent (CLI)" ;;
     hermes-desktop) echo "Hermes Desktop" ;;
+    openmausbot) echo "OpenMausBot" ;;
     codex-desktop) echo "Codex Desktop (community)" ;;
     claude-desktop) echo "Claude Desktop (community)" ;;
     *) echo "$1" ;;
@@ -225,6 +226,7 @@ usage() {
   printf '  desk claude [ARGS]   run Claude Code in this terminal\n'
   printf '  desk hermes [ARGS]   run Hermes Agent in this terminal\n'
   printf '  desk hermes-desktop open the official Hermes Desktop app\n'
+  printf '  desk openmausbot     open OpenMausBot desktop\n'
   printf '  desk codex-desktop   open the community Linux Codex desktop app\n'
   printf '  desk claude-desktop  open the community Linux Claude desktop app\n'
   printf '  desk android [ARGS] open Android 11 Google Play (Pixel 9 display)\n'
@@ -373,7 +375,7 @@ import tty
 title, action = sys.argv[1:3]
 separator = sys.argv.index("--", 3)
 labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play", "flutter": "Flutter SDK", "hermes": "Hermes Agent (CLI)", "hermes-desktop": "Hermes Desktop (official)",
-          "codex-desktop": "Codex Desktop (community Linux port)", "claude-desktop": "Claude Desktop (community Linux port)",
+          "codex-desktop": "Codex Desktop (community Linux port)", "claude-desktop": "Claude Desktop (community Linux port)", "openmausbot": "OpenMausBot",
           "android-toolchain": "Android app builds", "web-toolchain": "Web (Brave / Chrome)", "linux-toolchain": "Linux desktop"}
 programs = [(name, labels[name]) for name in sys.argv[3:separator]]
 chosen = set(sys.argv[separator + 1:]).intersection(name for name, _ in programs)
@@ -517,6 +519,7 @@ show_next_steps() {
   selected flutter && printf '  Flutter    flutter doctor   |   dart --version\n'
   selected hermes && printf '  Hermes     hermes setup   (choose your provider on first use)\n'
   selected hermes-desktop && printf '  Hermes Desktop  hermes-desktop\n'
+  selected openmausbot && printf '  OpenMausBot     openmausbot  (choose a logged-in agent in Settings → Engines)\n'
   selected codex-desktop && printf '  Codex Desktop   codex-desktop\n'
   selected claude-desktop && printf '  Claude Desktop  claude-desktop\n'
   printf '\nOpen programs: desk   |   Update installed programs: desk update\n'
@@ -1815,7 +1818,7 @@ write_launchers() {
   if selected hermes; then write_wrapper hermes hermes || return 1; fi
   if selected hermes-desktop; then write_hermes_desktop_launcher || return 1; fi
   local desktop_app
-  for desktop_app in codex-desktop claude-desktop; do
+  for desktop_app in codex-desktop claude-desktop openmausbot; do
     if selected "$desktop_app"; then write_ai_desktop_launcher "$desktop_app" || return 1; fi
   done
   if selected android; then write_wrapper android android || return 1; fi
@@ -2978,11 +2981,14 @@ launch_flutter() (
 
 
 # -------------------------------------------------------------------
-# Community Linux desktop packages (verified GitHub release AppImages)
+# Linux desktop packages (verified GitHub release AppImages)
 # -------------------------------------------------------------------
 
 ai_desktop_ready() {
-  [ -x "$APPS/$1/current/AppRun" ] && [ -f "$APPS/$1/.desk-release.json" ]
+  [ -x "$APPS/$1/current/AppRun" ] && [ -f "$APPS/$1/.desk-release.json" ] || return 1
+  if [ "$1" = openmausbot ]; then
+    [ -x "$APPS/$1/current/openmausbot" ] && [ -f "$APPS/$1/current/resources/app.asar" ] || return 1
+  fi
 }
 
 
@@ -3008,13 +3014,15 @@ PY
 
 write_ai_desktop_launcher() {
   local app=$1
+  local comment='Community Linux desktop package managed by 42-desk'
+  if [ "$app" = openmausbot ]; then comment='OpenMausBot desktop chat and agents managed by 42-desk'; fi
   write_wrapper "$app" "$app" || return 1
   mkdir -p "$DATA_DIR/applications" || return 1
   cat > "$DATA_DIR/applications/$app-desk.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=$(label "$app")
-Comment=Community Linux desktop package managed by 42-desk
+Comment=$comment
 Exec="$BIN_DIR/desk" $app %U
 Icon=applications-development
 Categories=Development;
@@ -3026,6 +3034,10 @@ EOF
 install_ai_desktop() (
   local app=$1
   if [ "$(uname -s)" != Linux ]; then fail 'Desktop packages currently support Linux only.'; return 1; fi
+  if [ "$app" = openmausbot ] && [ "$(uname -m)" != x86_64 ]; then
+    fail 'OpenMausBot currently publishes Linux packages for x86_64 only.'
+    return 1
+  fi
   if ai_desktop_ready "$app" && [ "${UPDATE_ONLY:-0}" != 1 ]; then
     ok "$(label "$app") is ready; use desk update $app to check for updates."
     return 0
@@ -3052,7 +3064,8 @@ from urllib.parse import quote, unquote, urlparse
 
 base, app, update = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3] == '1'
 repo = {'codex-desktop': 'cuongducle/codex-linux',
-        'claude-desktop': 'aaddrick/claude-desktop-debian'}[app]
+        'claude-desktop': 'aaddrick/claude-desktop-debian',
+        'openmausbot': 'milind-soni/OpenMausBot'}[app]
 root_url = 'https://github.com/' + repo
 current = base / 'current'
 marker = base / '.desk-release.json'
@@ -3122,12 +3135,18 @@ def main():
     parser = Assets()
     parser.feed(listing.read_text())
     machine = platform.machine()
-    arch = {'x86_64': ('x86_64' if app == 'codex-desktop' else 'amd64'),
+    arch = {'x86_64': ('amd64' if app == 'claude-desktop' else 'x86_64'),
             'aarch64': 'arm64'}.get(machine)
     if not arch:
         raise RuntimeError('unsupported Linux architecture: ' + machine)
-    pattern = (r'codex-desktop-linux-' + re.escape(arch) + r'\.AppImage' if app == 'codex-desktop'
-               else r'claude-desktop-unofficial-[0-9][A-Za-z0-9.+_-]*-' + re.escape(arch) + r'\.AppImage')
+    if app == 'openmausbot' and machine != 'x86_64':
+        raise RuntimeError('OpenMausBot currently publishes Linux packages for x86_64 only')
+    patterns = {
+        'codex-desktop': r'codex-desktop-linux-' + re.escape(arch) + r'\.AppImage',
+        'claude-desktop': r'claude-desktop-unofficial-[0-9][A-Za-z0-9.+_-]*-' + re.escape(arch) + r'\.AppImage',
+        'openmausbot': r'OpenMausBot-' + re.escape(tag.lstrip('v')) + r'-x86_64\.AppImage',
+    }
+    pattern = patterns[app]
     choices = [asset for asset in parser.assets
                if re.fullmatch(pattern, unquote(Path(urlparse(asset['url']).path).name))]
     if len(choices) != 1:
@@ -3140,7 +3159,7 @@ def main():
     if shutil.disk_usage(base).free < 3 * 1024**3:
         raise RuntimeError('keep at least 3 GB free in goinfre for desktop downloads and extraction')
     archive = base / 'downloads/application.AppImage'
-    print('Downloading ' + app + ' ' + tag + ' from community project ' + repo, flush=True)
+    print('Downloading ' + app + ' ' + tag + ' from ' + repo, flush=True)
     fetch(url, archive)
     digest = hashlib.sha256()
     with archive.open('rb') as stream:
@@ -3164,6 +3183,9 @@ def main():
             content = stage / 'squashfs-root'
             if not os.access(content / 'AppRun', os.X_OK):
                 raise RuntimeError('AppImage is missing its executable AppRun')
+            if app == 'openmausbot' and (not os.access(content / 'openmausbot', os.X_OK) or
+                                         not (content / 'resources/app.asar').is_file()):
+                raise RuntimeError('OpenMausBot AppImage is missing its native app or resources')
             if app == 'claude-desktop':
                 # This is an extracted directory, not a FUSE mount. The
                 # community launcher's AppImage mode disables the sandbox
@@ -3209,17 +3231,38 @@ launch_ai_desktop_unlocked() (
     prepare_ai_desktop_unlocked "$app" || return 1
   fi
   local cache="$GOINFRE/cache/$app"
+  local executable="$APPS/$app/current/AppRun"
   export APPDIR="$APPS/$app/current"
   if [ "$app" = claude-desktop ]; then export CLAUDE_FORCE_SANDBOX="${CLAUDE_FORCE_SANDBOX:-1}"; fi
   export XDG_CACHE_HOME="$cache/xdg" TMPDIR="$cache/tmp" TMP="$cache/tmp" TEMP="$cache/tmp"
   export MESA_SHADER_CACHE_DIR="$cache/mesa" __GL_SHADER_DISK_CACHE_PATH="$cache/nvidia"
   mkdir -p "$cache" "$XDG_CACHE_HOME" "$TMPDIR" "$MESA_SHADER_CACHE_DIR" "$__GL_SHADER_DISK_CACHE_PATH" || return 1
   chmod 700 "$cache" || return 1
+  if [ "$app" = openmausbot ]; then
+    # Its AppRun automatically adds --no-sandbox on restricted hosts. Launch
+    # the extracted native app with its bundled libraries and keep the sandbox.
+    executable="$APPDIR/openmausbot"
+    export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    # Application-menu launches may have a minimal PATH. Expose desk's agent
+    # wrappers without installing additional programs.
+    export PATH="$BIN_DIR:$PATH"
+    # Keep credentials and settings in their normal profile. Redirect only new
+    # cache directories; leave any existing independently managed ones intact.
+    local profile="$CONF_DIR/openmausbot" directory target
+    mkdir -p "$profile" || return 1
+    for directory in 'Code Cache' GPUCache DawnGraphiteCache DawnWebGPUCache ShaderCache GrShaderCache server-compile-cache; do
+      target="$cache/profile/$directory"
+      mkdir -p "$target" || return 1
+      if [ ! -e "$profile/$directory" ] && [ ! -L "$profile/$directory" ]; then
+        ln -sT "$target" "$profile/$directory" || return 1
+      fi
+    done
+  fi
   if [ "$app" = claude-desktop ] && { [ "${1:-}" = --version ] || [ "${1:-}" = --doctor ]; }; then
     exec "$APPS/$app/current/AppRun" "$@"
   fi
   info "Opening $(label "$app") (log: $(pretty "$STATE_DIR/open-$app.log"))"
-  start_detached_process "$APPS/$app/current/AppRun" --disable-setuid-sandbox --disk-cache-dir="$cache/chromium" "$@" \
+  start_detached_process "$executable" --disable-setuid-sandbox --disk-cache-dir="$cache/chromium" "$@" \
     </dev/null >"$STATE_DIR/open-$app.log" 2>&1 &
 )
 
@@ -3672,7 +3715,7 @@ prepare_all() {
       flutter) prepare_flutter || failed=1 ;;
       hermes) prepare_hermes || failed=1 ;;
       hermes-desktop) with_lock_wait hermes prepare_hermes_desktop_unlocked || failed=1 ;;
-      codex-desktop|claude-desktop) with_lock_wait "$program" prepare_ai_desktop_unlocked "$program" || failed=1 ;;
+      codex-desktop|claude-desktop|openmausbot) with_lock_wait "$program" prepare_ai_desktop_unlocked "$program" || failed=1 ;;
     esac
   done
 
@@ -3693,7 +3736,7 @@ program_executable() {
     flutter) printf '%s/flutter/sdk/bin/flutter\n' "$APPS" ;;
     hermes) printf '%s/hermes/current/source/.hermes/bin/hermes\n' "$APPS" ;;
     hermes-desktop) printf '%s/hermes/current/desktop\n' "$APPS" ;;
-    codex-desktop|claude-desktop) printf '%s/%s/current/AppRun\n' "$APPS" "$1" ;;
+    codex-desktop|claude-desktop|openmausbot) printf '%s/%s/current/AppRun\n' "$APPS" "$1" ;;
     *) return 2 ;;
   esac
 }
@@ -3705,7 +3748,7 @@ program_installed() {
   if [ "$1" = flutter ]; then flutter_ready; return $?; fi
   if [ "$1" = hermes ]; then hermes_ready; return $?; fi
   if [ "$1" = hermes-desktop ]; then hermes_desktop_ready; return $?; fi
-  case "$1" in codex-desktop|claude-desktop) ai_desktop_ready "$1"; return $? ;; esac
+  case "$1" in codex-desktop|claude-desktop|openmausbot) ai_desktop_ready "$1"; return $? ;; esac
   executable=$(program_executable "$1") || return $?
   [ -x "$executable" ]
 }
@@ -3720,7 +3763,7 @@ program_ready() {
     flutter) flutter_ready ;;
     hermes) hermes_ready ;;
     hermes-desktop) hermes_desktop_ready ;;
-    codex-desktop|claude-desktop) ai_desktop_ready "$1" ;;
+    codex-desktop|claude-desktop|openmausbot) ai_desktop_ready "$1" ;;
     *) return 2 ;;
   esac
 }
@@ -3769,7 +3812,7 @@ update_installed_programs() {
       flutter) with_lock_wait flutter install_flutter || failed=1 ;;
       hermes) with_lock_wait hermes install_hermes || failed=1 ;;
       hermes-desktop) with_lock_wait hermes install_hermes hermes-desktop || failed=1 ;;
-      codex-desktop|claude-desktop) with_lock_wait "$program" install_ai_desktop "$program" || failed=1 ;;
+      codex-desktop|claude-desktop|openmausbot) with_lock_wait "$program" install_ai_desktop "$program" || failed=1 ;;
     esac
   done
   if [ "$failed" = 0 ]; then
@@ -3920,7 +3963,7 @@ open_app() {
       with_lock_wait hermes launch_hermes_desktop_unlocked "$@"
       ;;
 
-    codex-desktop|claude-desktop)
+    codex-desktop|claude-desktop|openmausbot)
       with_lock_wait "$name" launch_ai_desktop_unlocked "$name" "$@"
       ;;
 
@@ -4059,7 +4102,7 @@ open_programs() {
   # Start desktop apps first, before a single AI tool takes over this terminal.
   for program in "${PROGRAMS[@]}"; do
     case "$program" in
-      code|brave|android|codex-desktop|claude-desktop|hermes-desktop) open_app "$program" || failed=1 ;;
+      code|brave|android|codex-desktop|claude-desktop|hermes-desktop|openmausbot) open_app "$program" || failed=1 ;;
     esac
   done
   [ "$failed" = 0 ] || return "$failed"
@@ -4175,7 +4218,7 @@ shell_prepare_component() {
       if with_lock_try hermes prepare_hermes_desktop_unlocked; then rc=0; else rc=$?; fi
       ;;
 
-    codex-desktop|claude-desktop)
+    codex-desktop|claude-desktop|openmausbot)
       if ai_desktop_ready "$name"; then return 0; fi
       if with_lock_try "$name" prepare_ai_desktop_unlocked "$name"; then rc=0; else rc=$?; fi
       ;;
@@ -4338,7 +4381,7 @@ native_apps_running() {
   fi
 
   local desktop_app
-  for desktop_app in codex-desktop claude-desktop; do
+  for desktop_app in codex-desktop claude-desktop openmausbot; do
     if ai_desktop_running "$desktop_app"; then
       warn "$(label "$desktop_app") is running. Close it first."
       running=1
@@ -4408,8 +4451,10 @@ clean_reset_unlocked() {
     "$GOINFRE/cache/hermes" \
     "$APPS/codex-desktop" \
     "$APPS/claude-desktop" \
+    "$APPS/openmausbot" \
     "$GOINFRE/cache/codex-desktop" \
     "$GOINFRE/cache/claude-desktop" \
+    "$GOINFRE/cache/openmausbot" \
     "$GOINFRE/cache/vscode-vsix"
 
   rm -rf "$APPS/flutter/sdk"
@@ -4441,7 +4486,7 @@ clean_reset_unlocked() {
   if managed_wrapper "$BIN_DIR/hermes-desktop"; then rm -f "$BIN_DIR/hermes-desktop"; fi
   rm -f "$DATA_DIR/applications/hermes-desktop-desk.desktop"
   local desktop_app
-  for desktop_app in codex-desktop claude-desktop; do
+  for desktop_app in codex-desktop claude-desktop openmausbot; do
     if managed_wrapper "$BIN_DIR/$desktop_app"; then rm -f "$BIN_DIR/$desktop_app"; fi
     rm -f "$DATA_DIR/applications/$desktop_app-desk.desktop"
   done
@@ -4588,7 +4633,7 @@ clean_reset() {
     if lock_try_acquire hermes; then held_hermes=1; else rc=1; fi
   fi
 
-  for extra_lock in codex-desktop claude-desktop; do
+  for extra_lock in codex-desktop claude-desktop openmausbot; do
     [ "$rc" = 0 ] || break
     if lock_try_acquire "$extra_lock"; then extra_locks+=("$extra_lock"); else rc=1; fi
   done
@@ -4650,7 +4695,7 @@ show_status() {
       flutter) executable="$APPS/flutter/sdk/bin/flutter"; version="$APPS/flutter/.installed-version" ;;
       hermes) executable="$APPS/hermes/current/source/.hermes/bin/hermes"; version="$APPS/hermes/.installed-version" ;;
       hermes-desktop) executable="$APPS/hermes/current/desktop"; version="$APPS/hermes/.installed-version" ;;
-      codex-desktop|claude-desktop) executable="$APPS/$program/current/AppRun"; version="$APPS/$program/.installed-version" ;;
+      codex-desktop|claude-desktop|openmausbot) executable="$APPS/$program/current/AppRun"; version="$APPS/$program/.installed-version" ;;
     esac
     if [ -x "$executable" ]; then
       state=installed
@@ -4661,7 +4706,7 @@ show_status() {
         flutter) flutter_ready || state='needs setup' ;;
         hermes) hermes_ready || state='needs setup' ;;
         hermes-desktop) hermes_desktop_ready || state='needs setup' ;;
-        codex-desktop|claude-desktop) ai_desktop_ready "$program" || state='needs setup' ;;
+        codex-desktop|claude-desktop|openmausbot) ai_desktop_ready "$program" || state='needs setup' ;;
       esac
     fi
     version=$(cat "$version" 2>/dev/null || printf '%s' '-')
@@ -4801,7 +4846,7 @@ main() {
       open_app hermes-desktop "$@"
       ;;
 
-    codex-desktop|claude-desktop)
+    codex-desktop|claude-desktop|openmausbot)
       open_app "$cmd" "$@"
       ;;
 

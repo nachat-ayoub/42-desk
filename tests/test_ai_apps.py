@@ -35,7 +35,8 @@ class AppFixtures(unittest.TestCase):
 
 class DesktopAppTests(AppFixtures):
     repos = {'codex-desktop': 'cuongducle/codex-linux',
-             'claude-desktop': 'aaddrick/claude-desktop-debian'}
+             'claude-desktop': 'aaddrick/claude-desktop-debian',
+             'openmausbot': 'milind-soni/OpenMausBot'}
 
     def setUp(self):
         super().setUp()
@@ -56,18 +57,21 @@ pathlib.Path(args[args.index('-o') + 1]).write_bytes(pathlib.Path(source).read_b
 ''')
         self.make_release('codex-desktop', 'v26.820.60940')
         self.make_release('claude-desktop', 'v3.3.11+claude2.42304.0')
+        self.make_release('openmausbot', 'v0.1.116')
 
     def make_release(self, app, tag, missing_digest=False, bad_host=False, fail_extract=False):
         repo = self.repos[app]
-        name = ('codex-desktop-linux-x86_64.AppImage' if app == 'codex-desktop'
-                else 'claude-desktop-unofficial-2.42304.0-3.3.11-amd64.AppImage')
+        name = {'codex-desktop': 'codex-desktop-linux-x86_64.AppImage',
+                'claude-desktop': 'claude-desktop-unofficial-2.42304.0-3.3.11-amd64.AppImage',
+                'openmausbot': 'OpenMausBot-' + tag.lstrip('v') + '-x86_64.AppImage'}[app]
         artifact = self.root / (app + '-' + tag + '.AppImage')
         launcher = '''#!/usr/bin/env python3
 import json, os, pathlib, sys
 root = pathlib.Path(os.environ['DESK_FIXTURE'])
 (root / 'APP-launch.json').write_text(json.dumps({
     'args': sys.argv[1:], 'env': {name: os.environ.get(name) for name in (
-        'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'TMPDIR', 'MESA_SHADER_CACHE_DIR', 'APPDIR', 'CLAUDE_FORCE_SANDBOX')}
+        'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'TMPDIR', 'MESA_SHADER_CACHE_DIR', 'APPDIR', 'CLAUDE_FORCE_SANDBOX',
+        'PATH', 'OMB_DATA_DIR', 'LD_LIBRARY_PATH')}
 }))
 '''.replace('APP-launch.json', app + '-launch.json')
         script = '''#!/bin/sh
@@ -84,6 +88,13 @@ if APP_NAME == 'claude-desktop':
     record.write_text(LAUNCHER)
     record.chmod(0o755)
     target.write_text("""#!/bin/sh\nflags=\nbuild_electron_args() { [ "$1" != appimage ] || flags=--no-sandbox; }\nbuild_electron_args 'appimage'\nexec "$(dirname "$0")/record.py" $flags "$@"\n""")
+if APP_NAME == 'openmausbot':
+    native = root / 'openmausbot'
+    native.write_text(LAUNCHER)
+    native.chmod(0o755)
+    (root / 'resources').mkdir()
+    (root / 'resources/app.asar').write_text('packaged app')
+    target.write_text("""#!/bin/sh\nexec "$(dirname "$0")/openmausbot" --no-sandbox "$@"\n""")
 PY
 '''.replace('LAUNCHER', repr(launcher)).replace('APP_NAME', repr(app))
         if fail_extract:
@@ -97,6 +108,12 @@ PY
         listing.write_text('<ul><li><a href="' + url + '">AppImage</a>' +
                            ('' if missing_digest else '<clipboard-copy value="sha256:' + digest + '"></clipboard-copy>') +
                            '</li><li><a href="' + url + '.zsync">zsync</a></li></ul>')
+        if app == 'openmausbot':
+            # Upstream also publishes an identical, unversioned alias. Choose
+            # the exact version/architecture asset, not an ambiguous alias.
+            listing.write_text(listing.read_text() + '<li><a href="' + prefix +
+                               '/OpenMausBot.AppImage">Portable alias</a><clipboard-copy value="sha256:' +
+                               digest + '"></clipboard-copy></li>')
         self.urls['https://github.com/' + repo + '/releases/latest'] = str(page)
         self.urls['https://github.com/' + repo + '/releases/expanded_assets/' + quote(tag, safe='')] = str(listing)
         self.urls['https://github.com' + url] = str(artifact)
@@ -106,12 +123,15 @@ PY
     def install(self, app='codex-desktop'):
         return self.run_desk('install', app)
 
-    def test_install_both_desktop_apps_creates_wrappers_and_menu_entries_without_opening(self):
-        self.run_desk('install', 'codex-desktop', 'claude-desktop')
+    def test_install_appimage_apps_creates_wrappers_and_menu_entries_without_opening(self):
+        self.run_desk('install', *self.repos)
         for app in self.repos:
             self.assertTrue((self.storage / 'apps' / app / 'current/AppRun').is_file())
             self.assertTrue((self.home / '.local/bin' / app).is_file())
-            self.assertIn('community', (self.home / '.local/share/applications' / (app + '-desk.desktop')).read_text())
+            entry = (self.home / '.local/share/applications' / (app + '-desk.desktop')).read_text()
+            self.assertIn('OpenMausBot' if app == 'openmausbot' else 'community', entry)
+            if app == 'openmausbot':
+                self.assertNotIn('Community', entry)
             self.assertFalse((self.root / (app + '-launch.json')).exists())
             self.assertFalse((self.storage / 'apps' / app / 'downloads/application.AppImage').exists())
 
@@ -141,7 +161,7 @@ PY
     def test_open_launches_both_desktops_without_needing_a_terminal_emulator(self):
         self.run_desk('install', 'codex-desktop', 'claude-desktop')
         self.run_desk('open', 'codex-desktop', 'claude-desktop')
-        for app in self.repos:
+        for app in ('codex-desktop', 'claude-desktop'):
             self.read_record(app + '-launch.json')
         self.assertEqual((self.state / 'open-programs').read_text(), 'codex-desktop\nclaude-desktop\n')
 
@@ -199,8 +219,9 @@ PY
         self.assertEqual((self.storage / 'apps/codex-desktop/.installed-version').read_text(), 'v26.820.60940\n')
 
     def test_clean_preserves_desktop_profiles(self):
-        self.run_desk('install', 'codex-desktop', 'claude-desktop')
-        profiles = [self.home / '.config/Codex/account', self.home / '.config/Claude/account']
+        self.run_desk('install', *self.repos)
+        profiles = [self.home / '.config/Codex/account', self.home / '.config/Claude/account',
+                    self.home / '.openmausbot/config.json', self.home / '.config/openmausbot/credentials.bin']
         for path in profiles:
             path.parent.mkdir(parents=True)
             path.write_text('keep user account')
@@ -236,6 +257,125 @@ PY
         self.assertEqual(code, 1, output.decode())
         self.assertTrue(lock.exists())
         for name in ('first-run', 'core', 'code', 'brave', 'codex', 'claude', 'flutter', 'hermes', 'codex-desktop'):
+            self.assertFalse((self.state / 'locks' / (name + '.lock')).exists())
+
+    def test_openmausbot_checklist_choice_installs_only_the_app(self):
+        code, output = self.interact('install', [b'n' + b'j' * 10 + b' \r'])
+        self.assertEqual(code, 0, output.decode())
+        self.assertIn(b'OpenMausBot', output)
+        self.assertEqual((self.state / 'programs').read_text(), 'openmausbot\n')
+        self.assertTrue((self.storage / 'apps/openmausbot/current/AppRun').is_file())
+        self.assertFalse((self.storage / 'apps/codex').exists())
+        self.assertFalse((self.storage / 'apps/claude').exists())
+        self.assertFalse((self.root / 'openmausbot-launch.json').exists())
+
+    def test_openmausbot_open_uses_cache_and_exposes_agent_wrappers_preserving_data_override(self):
+        self.install('openmausbot')
+        custom = self.root / 'my bot data'
+        custom.mkdir()
+        (custom / 'config.json').write_text('saved bots')
+        self.env['OMB_DATA_DIR'] = str(custom)
+        profile = self.home / '.config/openmausbot'
+        existing = profile / 'GPUCache'
+        existing.mkdir(parents=True)
+        (existing / 'existing-cache').write_text('keep existing directory')
+        self.run_desk('openmausbot', '--', 'argument with spaces')
+        record = self.read_record('openmausbot-launch.json')
+        cache = self.storage / 'cache/openmausbot'
+        self.assertEqual(record['args'], ['--disable-setuid-sandbox', '--disk-cache-dir=' + str(cache / 'chromium'), '--', 'argument with spaces'])
+        self.assertEqual(record['env']['PATH'].split(os.pathsep)[0], str(self.home / '.local/bin'))
+        self.assertEqual(record['env']['OMB_DATA_DIR'], str(custom))
+        self.assertEqual(record['env']['XDG_CONFIG_HOME'], str(self.home / '.config'))
+        self.assertEqual(record['env']['APPDIR'], str(self.storage / 'apps/openmausbot/current'))
+        for name in ('TMPDIR', 'XDG_CACHE_HOME', 'MESA_SHADER_CACHE_DIR'):
+            self.assertTrue(Path(record['env'][name]).is_relative_to(cache), record)
+        self.assertEqual(record['env']['LD_LIBRARY_PATH'].split(os.pathsep)[0], str(self.storage / 'apps/openmausbot/current/usr/lib'))
+        for directory in ('Code Cache', 'server-compile-cache'):
+            self.assertTrue((profile / directory).is_symlink())
+            self.assertEqual((profile / directory).resolve(), cache / 'profile' / directory)
+        self.assertFalse(existing.is_symlink())
+        self.assertEqual((existing / 'existing-cache').read_text(), 'keep existing directory')
+        self.assertEqual((custom / 'config.json').read_text(), 'saved bots')
+
+    def test_openmausbot_recreates_cache_targets_after_clean(self):
+        self.install('openmausbot')
+        self.run_desk('openmausbot')
+        self.read_record('openmausbot-launch.json')
+        profile = self.home / '.config/openmausbot'
+        (profile / 'credentials.bin').write_text('saved account')
+        self.source('setup_runtime; clean_reset_unlocked')
+        self.assertFalse((profile / 'server-compile-cache').exists())
+        self.assertTrue((profile / 'server-compile-cache').is_symlink())
+        self.install('openmausbot')
+        self.run_desk('openmausbot')
+        self.assertTrue((profile / 'server-compile-cache').is_dir())
+        self.assertEqual((profile / 'credentials.bin').read_text(), 'saved account')
+
+    def test_openmausbot_open_picker_and_maintenance_work_offline(self):
+        self.install('openmausbot')
+        requests = (self.root / 'requests').read_text()
+        (self.root / 'offline').touch()
+        self.run_desk('p')
+        self.source('setup_runtime; shell_prepare_component openmausbot')
+        self.run_desk('open', 'openmausbot')
+        self.read_record('openmausbot-launch.json')
+        self.assertEqual((self.state / 'open-programs').read_text(), 'openmausbot\n')
+        self.assertEqual((self.root / 'requests').read_text(), requests)
+        self.assertRegex(self.run_desk('st').stdout, r'OpenMausBot\s+yes\s+installed\s+v0.1.116')
+
+    def test_openmausbot_update_failure_preserves_app_then_valid_update_succeeds(self):
+        self.install('openmausbot')
+        current = self.storage / 'apps/openmausbot/current'
+        old = current.resolve()
+        artifact = self.make_release('openmausbot', 'v0.1.117')
+        artifact.write_bytes(b'corrupt download')
+        result = self.run_desk('update', 'openmausbot', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('checksum mismatch', result.stderr)
+        self.assertEqual(current.resolve(), old)
+        self.make_release('openmausbot', 'v0.1.117')
+        self.run_desk('update', 'openmausbot')
+        self.assertNotEqual(current.resolve(), old)
+        self.assertTrue(old.is_dir())
+        self.assertEqual((self.state / 'programs').read_text(), 'openmausbot\n')
+        self.assertEqual((self.storage / 'apps/openmausbot/.installed-version').read_text(), 'v0.1.117\n')
+        self.assertFalse((self.root / 'openmausbot-launch.json').exists())
+
+    def test_openmausbot_arm64_is_rejected_without_a_download(self):
+        self.write_executable(self.bin / 'uname', '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo aarch64;; esac\n')
+        result = self.run_desk('install', 'openmausbot', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('x86_64 only', result.stderr)
+        self.assertFalse((self.root / 'requests').exists())
+
+    def test_openmausbot_running_blocks_updates_and_cleanup(self):
+        self.install('openmausbot')
+        executable = self.storage / 'apps/openmausbot/current/AppRun'
+        executable.unlink()
+        shutil.copy2(shutil.which('sleep'), executable)
+        process = subprocess.Popen(['bot-desktop', '30'], executable=str(executable))
+        try:
+            requests = (self.root / 'requests').read_text()
+            result = self.run_desk('update', 'openmausbot')
+            self.assertIn('is running', result.stderr)
+            self.assertEqual((self.root / 'requests').read_text(), requests)
+            result = self.source('setup_runtime; native_apps_running', check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('OpenMausBot is running', result.stderr)
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+
+    def test_openmausbot_lock_blocks_clean_and_releases_other_locks(self):
+        self.save_selection('openmausbot\n')
+        lock = self.state / 'locks/openmausbot.lock'
+        lock.mkdir(parents=True)
+        (lock / 'pid').write_text(str(os.getpid()))
+        code, output = self.interact('clean', [b'y\n'], b'Continue? [y/N] ')
+        self.assertEqual(code, 1, output.decode())
+        self.assertTrue(lock.exists())
+        for name in ('first-run', 'core', 'code', 'brave', 'codex', 'claude', 'flutter',
+                     'hermes', 'codex-desktop', 'claude-desktop'):
             self.assertFalse((self.state / 'locks' / (name + '.lock')).exists())
 
 

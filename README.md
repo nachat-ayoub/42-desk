@@ -6,10 +6,10 @@
 42 / 1337 Linux machines.
 
 It installs your choice of **VS Code, Brave, Codex CLI, Claude Code, Android 11 Google Play,
-Flutter, Hermes Desktop, Hermes Agent (CLI), Codex Desktop, and Claude Desktop** inside
+Flutter, Hermes Desktop, Hermes Agent (CLI), Codex Desktop, Claude Desktop, and OpenMausBot** inside
 `goinfre`. It migrates existing editor/browser profiles, creates familiar
 `code`, `brave`, `codex`, `claude`, `android`, `flutter`, `dart`, `hermes`,
-`hermes-desktop`, `codex-desktop`, and `claude-desktop` commands for the selected programs.
+`hermes-desktop`, `codex-desktop`, `claude-desktop`, and `openmausbot` commands for the selected programs.
 Choose what to open with `desk`, and update installed programs with `desk update`.
 Shell startup also checks your saved installation selection for updates.
 
@@ -22,6 +22,7 @@ Shell startup also checks your saved installation selection for updates.
 - Native Codex CLI and Claude Code (no Node.js/npm required)
 - Separate Codex Desktop and Claude Desktop entries using community Linux packages
 - Official Nous Research Hermes Desktop, built for Linux with its managed agent backend
+- OpenMausBot desktop from its official Linux AppImage, with Codex/Claude command discovery
 - Hermes Agent from official source releases, with its pinned runtime and caches in `goinfre`
 - Android 11 with Google Play Store and a 1080×2424 Pixel 9 display profile
 - Stable Flutter SDK with bundled Dart and Pub/Gradle caches in `goinfre`
@@ -84,7 +85,7 @@ From this checkout on the new machine, run:
 ./desk install all
 ```
 
-This installs all ten programs without opening them, saves your selection, and refreshes
+This installs all eleven programs without opening them, saves your selection, and refreshes
 the managed `desk` command. Then run `desk` to choose what to open, or `desk android`
 to start Android. Repeating setup reuses completed Android downloads and existing
 device data. Network access is needed for missing packages, and Linux KVM access is
@@ -101,7 +102,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.11.0) and `desk st`.
+the installed command. Verify with `desk --version` (2.12.0) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -126,6 +127,7 @@ Choose your programs
    [ ] Codex Desktop (community Linux port)
    [ ] Claude Desktop (community Linux port)
    [ ] Hermes Desktop (official)
+   [ ] OpenMausBot
 
 Up/Down or j/k: move   Space: toggle
 Enter: install   a: all   n: none   Esc/q: cancel
@@ -537,6 +539,49 @@ Use `claude-desktop --version` or `claude-desktop --doctor` for foreground diagn
 are running. Routine shell maintenance reuses installed copies without downloading
 them. Older release directories are retained until `desk clean`, which keeps user profiles.
 
+### OpenMausBot
+
+```bash
+git pull
+./desk install                # Check OpenMausBot and any agent CLIs you want
+# Or select just the desktop app:
+./desk install openmausbot
+desk openmausbot               # Also available as openmausbot or in desk's launch picker
+desk update openmausbot       # Check for a newer release without opening it
+```
+
+[OpenMausBot](https://github.com/milind-soni/OpenMausBot) is the local desktop
+chat app for a team of AI agents, described by its author as an open-source
+Grok Bot alternative. Desk downloads the official versioned Linux AppImage,
+verifies its published GitHub SHA-256 digest, and extracts it into
+`$GOINFRE/apps/openmausbot`. Neither sudo nor FUSE is needed. Upstream currently
+publishes an **Ubuntu 24.04 x86-64 beta**; Linux ARM64 packages are unavailable.
+Setup needs `curl`, `python3`, and **3 GB free** for download and extraction.
+
+OpenMausBot uses agent CLIs already installed on your machine. Select **Codex CLI**
+or **Claude Code** alongside it if needed, and sign in with `codex login` or
+`claude auth login`. In OpenMausBot, choose your engine in **Settings → Engines**.
+Desk exposes its `~/.local/bin` wrappers to the app, including when launched
+from the application menu. Selecting only OpenMausBot does not install other
+programs. Its Electron runtime and local server are included in the package;
+a separate Node.js installation is unnecessary.
+
+Temporary files, browser disk cache, shader caches, and new profile compile/graphics
+caches use `$GOINFRE/cache/openmausbot`. Existing cache folders are preserved.
+Bot configuration and conversations stay in `~/.openmausbot` or your explicit
+`OMB_DATA_DIR`; desktop credentials and settings retain their normal location.
+Desk launches the extracted native app with its bundled libraries and the
+unprivileged namespace sandbox. It avoids the AppImage launcher's automatic
+`--no-sandbox` fallback. The same system sandbox requirements as the desktop
+apps above apply.
+
+Setup creates a checkbox choice, `openmausbot` wrapper, and application menu entry
+without opening the app. Launch output is saved to
+`~/.config/desk/open-openmausbot.log`. Use `desk update openmausbot` for updates;
+failed downloads keep the working release, and running instances postpone updates.
+`desk clean` removes the managed app, wrappers, menu entry, and caches while
+preserving bot data and desktop settings.
+
 ### Hermes Desktop (official)
 
 ```bash
@@ -623,7 +668,7 @@ desk choose                # Alias for the same picker
 desk install code codex    # Save exactly this selection and prepare it
 desk install brave         # Browser only
 desk install codex claude   # Both terminal AI tools
-desk install all           # All ten programs
+desk install all           # All eleven programs
 desk install none          # Disable automatic program preparation
 desk p                     # Prepare/update the saved installation selection
 desk update                # Update all currently installed programs
@@ -678,6 +723,7 @@ desk ai [ARGS]       run Codex CLI in this terminal
 desk claude [ARGS]   run Claude Code in this terminal
 desk hermes [ARGS]   run Hermes Agent in this terminal
 desk hermes-desktop open the official Hermes Desktop app
+desk openmausbot     open OpenMausBot desktop
 desk codex-desktop   open the community Linux Codex desktop app
 desk claude-desktop  open the community Linux Claude desktop app
 desk android [ARGS]  open the managed Android emulator
@@ -935,7 +981,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.11.0
+42-desk 2.12.0
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI
@@ -951,6 +997,7 @@ Example:
   Codex Desktop (community) no not installed -
   Claude Desktop (community) no not installed -
   Hermes Desktop no       not installed -
+  OpenMausBot   no        not installed -
 
   Update log   ~/.config/desk/last-run.log
   Codex cache  /goinfre/you/cache/codex
@@ -984,6 +1031,7 @@ desk clean
 - removes desk-managed Claude Code and its managed cache
 - removes managed Hermes source/runtime/cache while keeping its user data
 - removes community Codex/Claude desktop packages and caches while keeping profiles
+- removes OpenMausBot and its managed caches while keeping bot data and desktop settings
 - removes the managed `code`, `brave`, `codex`, and `claude` wrappers
 - removes the Android wrapper/desktop entry while preserving Android SDK and device data
 - removes desktop launchers
@@ -1077,7 +1125,7 @@ State:
 ## Desktop launchers
 
 `42-desk` creates user desktop entries for selected VS Code, Brave, Android,
-Codex Desktop, Claude Desktop, and Hermes Desktop installations. Codex CLI,
+Codex Desktop, Claude Desktop, Hermes Desktop, and OpenMausBot installations. Codex CLI,
 Claude Code, Flutter, and Hermes Agent (CLI) run in the terminal and have no desktop launchers.
 
 The Brave entry appears as:
