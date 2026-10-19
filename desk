@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.9.1"
+VERSION="2.10.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -42,7 +42,7 @@ PROGRAMS_FILE="$STATE_DIR/programs"
 OPEN_PROGRAMS_FILE="$STATE_DIR/open-programs"
 # Existing installations keep their original two-program selection.
 PROGRAMS=(code brave)
-ALL_PROGRAMS=(code brave codex claude android flutter)
+ALL_PROGRAMS=(code brave codex claude android flutter hermes codex-desktop claude-desktop)
 PICKER_PROGRAMS=("${ALL_PROGRAMS[@]}")
 
 AUTO_CHECK_SECONDS=$((12 * 60 * 60))
@@ -189,6 +189,9 @@ label() {
     claude) echo "Claude Code" ;;
     android) echo "Android 11 Google Play" ;;
     flutter) echo "Flutter SDK" ;;
+    hermes) echo "Hermes Agent" ;;
+    codex-desktop) echo "Codex Desktop (community)" ;;
+    claude-desktop) echo "Claude Desktop (community)" ;;
     *) echo "$1" ;;
   esac
 }
@@ -219,6 +222,9 @@ usage() {
   printf '  desk b [ARGS]        open Brave\n'
   printf '  desk ai [ARGS]       run Codex CLI in this terminal\n'
   printf '  desk claude [ARGS]   run Claude Code in this terminal\n'
+  printf '  desk hermes [ARGS]   run Hermes Agent in this terminal\n'
+  printf '  desk codex-desktop   open the community Linux Codex desktop app\n'
+  printf '  desk claude-desktop  open the community Linux Claude desktop app\n'
   printf '  desk android [ARGS] open Android 11 Google Play (Pixel 9 display)\n'
   printf '  desk flutter [ARGS] run Flutter (includes Dart)\n'
   printf '  desk flutter-setup [TARGETS] prepare Android/web/Linux build tools\n'
@@ -235,7 +241,7 @@ usage() {
 
   printf '          codex [ARGS]   claude [ARGS]   android [ARGS]\n'
   printf '          flutter [ARGS]   dart [ARGS]\n\n'
-  printf 'Programs: code, brave, codex, claude, android, flutter, all, none\n'
+  printf 'Programs: %s, all, none\n' "${ALL_PROGRAMS[*]}"
   printf 'Examples: desk install code codex   |   desk install\n'
   printf 'Deselecting a program leaves its installation and data intact.\n'
 
@@ -258,40 +264,42 @@ selected() {
 
 
 normalize_programs() {
-  local token word
-  local code=0 brave=0 codex=0 claude=0 android=0 flutter=0 none=0
-  local -a words=()
+  local token word program choice found none=0
+  local -a words=() requested=()
   for token in "$@"; do
     read -r -a words <<< "${token//,/ }"
     for word in "${words[@]}"; do
       case "$word" in
-        c|code|vscode) code=1 ;;
-        b|brave) brave=1 ;;
-        ai|codex) codex=1 ;;
-        cc|claude|claude-code) claude=1 ;;
-        android|emulator) android=1 ;;
-        flutter) flutter=1 ;;
-        all) code=1; brave=1; codex=1; claude=1; android=1; flutter=1 ;;
+        c|vscode) word=code ;;
+        b) word=brave ;;
+        ai) word=codex ;;
+        cc|claude-code) word=claude ;;
+        emulator) word=android ;;
+        hermes-agent) word=hermes ;;
+        all) requested+=("${ALL_PROGRAMS[@]}"); continue ;;
         none) none=1 ;;
-        *) fail "Unknown program: $word. Choose code, brave, codex, claude, android, flutter, all, or none."; return 2 ;;
       esac
+      [ "$word" != none ] || continue
+      found=0
+      for program in "${ALL_PROGRAMS[@]}"; do [ "$word" != "$program" ] || found=1; done
+      if [ "$found" = 0 ]; then fail "Unknown program: $word. Choose ${ALL_PROGRAMS[*]}, all, or none."; return 2; fi
+      requested+=("$word")
     done
   done
-  if [ "$none" = 1 ] && [ "$((code + brave + codex + claude + android + flutter))" != 0 ]; then
+  if [ "$none" = 1 ] && [ "${#requested[@]}" != 0 ]; then
     fail "Use 'none' on its own."
     return 2
   fi
-  if [ "$none" = 0 ] && [ "$((code + brave + codex + claude + android + flutter))" = 0 ]; then
+  if [ "$none" = 0 ] && [ "${#requested[@]}" = 0 ]; then
     fail "Choose at least one program, or 'none'."
     return 2
   fi
   PROGRAMS=()
-  [ "$code" = 0 ] || PROGRAMS+=(code)
-  [ "$brave" = 0 ] || PROGRAMS+=(brave)
-  [ "$codex" = 0 ] || PROGRAMS+=(codex)
-  [ "$claude" = 0 ] || PROGRAMS+=(claude)
-  [ "$android" = 0 ] || PROGRAMS+=(android)
-  [ "$flutter" = 0 ] || PROGRAMS+=(flutter)
+  for program in "${ALL_PROGRAMS[@]}"; do
+    for choice in "${requested[@]}"; do
+      if [ "$choice" = "$program" ]; then PROGRAMS+=("$program"); break; fi
+    done
+  done
   return 0
 }
 
@@ -362,7 +370,8 @@ import tty
 
 title, action = sys.argv[1:3]
 separator = sys.argv.index("--", 3)
-labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play", "flutter": "Flutter SDK",
+labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play", "flutter": "Flutter SDK", "hermes": "Hermes Agent",
+          "codex-desktop": "Codex Desktop (community Linux port)", "claude-desktop": "Claude Desktop (community Linux port)",
           "android-toolchain": "Android app builds", "web-toolchain": "Web (Brave / Chrome)", "linux-toolchain": "Linux desktop"}
 programs = [(name, labels[name]) for name in sys.argv[3:separator]]
 chosen = set(sys.argv[separator + 1:]).intersection(name for name, _ in programs)
@@ -504,6 +513,9 @@ show_next_steps() {
   selected claude && printf '  Claude     claude  (sign in on first use)\n'
   selected android && printf '  Android    android  (Google Play, 1080x2424 display)\n'
   selected flutter && printf '  Flutter    flutter doctor   |   dart --version\n'
+  selected hermes && printf '  Hermes     hermes setup   (choose your provider on first use)\n'
+  selected codex-desktop && printf '  Codex Desktop   codex-desktop\n'
+  selected claude-desktop && printf '  Claude Desktop  claude-desktop\n'
   printf '\nOpen programs: desk   |   Update installed programs: desk update\n'
   printf '\nChange programs anytime: desk install\n'
 }
@@ -1797,6 +1809,11 @@ write_launchers() {
   if selected brave; then write_wrapper brave brave || return 1; fi
   if selected codex; then write_wrapper codex codex || return 1; fi
   if selected claude; then write_wrapper claude claude || return 1; fi
+  if selected hermes; then write_wrapper hermes hermes || return 1; fi
+  local desktop_app
+  for desktop_app in codex-desktop claude-desktop; do
+    if selected "$desktop_app"; then write_ai_desktop_launcher "$desktop_app" || return 1; fi
+  done
   if selected android; then write_wrapper android android || return 1; fi
   if selected flutter; then
     write_wrapper flutter flutter || return 1
@@ -2957,6 +2974,461 @@ launch_flutter() (
 
 
 # -------------------------------------------------------------------
+# Community Linux desktop packages (verified GitHub release AppImages)
+# -------------------------------------------------------------------
+
+ai_desktop_ready() {
+  [ -x "$APPS/$1/current/AppRun" ] && [ -f "$APPS/$1/.desk-release.json" ]
+}
+
+
+ai_desktop_running() {
+  python3 - "$APPS/$1" <<'PY'
+import glob, os, sys
+prefix = os.path.realpath(sys.argv[1]) + '/'
+for entry in glob.iglob('/proc/[0-9]*'):
+    try:
+        if entry.rsplit('/', 1)[-1] == str(os.getpid()):
+            continue
+        if os.readlink(entry + '/exe').startswith(prefix):
+            sys.exit(0)
+        with open(entry + '/cmdline', 'rb') as stream:
+            if any(arg.startswith(os.fsencode(prefix)) for arg in stream.read().split(b'\0')):
+                sys.exit(0)
+    except OSError:
+        pass
+sys.exit(1)
+PY
+}
+
+
+write_ai_desktop_launcher() {
+  local app=$1
+  write_wrapper "$app" "$app" || return 1
+  mkdir -p "$DATA_DIR/applications" || return 1
+  cat > "$DATA_DIR/applications/$app-desk.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=$(label "$app")
+Comment=Community Linux desktop package managed by 42-desk
+Exec="$BIN_DIR/desk" $app %U
+Icon=applications-development
+Categories=Development;
+Terminal=false
+EOF
+}
+
+
+install_ai_desktop() (
+  local app=$1
+  if [ "$(uname -s)" != Linux ]; then fail 'Desktop packages currently support Linux only.'; return 1; fi
+  if ai_desktop_ready "$app" && [ "${UPDATE_ONLY:-0}" != 1 ]; then
+    ok "$(label "$app") is ready; use desk update $app to check for updates."
+    return 0
+  fi
+  if ai_desktop_running "$app"; then
+    warn "$(label "$app") is running. Close it before updating."
+    ai_desktop_ready "$app"
+    return $?
+  fi
+  info "Checking $(label "$app")"
+  python3 - "$APPS/$app" "$app" "${UPDATE_ONLY:-0}" <<'AI_DESKTOP_INSTALLER'
+import hashlib
+from html.parser import HTMLParser
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from urllib.parse import quote, unquote, urlparse
+
+base, app, update = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3] == '1'
+repo = {'codex-desktop': 'cuongducle/codex-linux',
+        'claude-desktop': 'aaddrick/claude-desktop-debian'}[app]
+root_url = 'https://github.com/' + repo
+current = base / 'current'
+marker = base / '.desk-release.json'
+
+
+def fetch(url, destination):
+    part = destination.with_name(destination.name + '.part')
+    try:
+        subprocess.run(['curl', '-fL', '--retry', '2', '--connect-timeout', '15',
+                        '--speed-limit', '1024', '--speed-time', '60', url, '-o', str(part)], check=True)
+        part.replace(destination)
+    finally:
+        part.unlink(missing_ok=True)
+
+
+class Assets(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.assets, self.row = [], None
+
+    def handle_starttag(self, tag, attributes):
+        values = dict(attributes)
+        if tag == 'li':
+            self.row = {}
+        elif self.row is not None:
+            if tag == 'a' and '/releases/download/' in values.get('href', ''):
+                self.row['url'] = values['href']
+            if tag == 'clipboard-copy' and re.fullmatch(r'sha256:[a-fA-F0-9]{64}', values.get('value', '')):
+                self.row['sha256'] = values['value'][7:].lower()
+
+    def handle_endtag(self, tag):
+        if tag == 'li' and self.row is not None:
+            if 'url' in self.row and 'sha256' in self.row:
+                self.assets.append(self.row)
+            self.row = None
+
+
+def main():
+    (base / 'downloads').mkdir(parents=True, exist_ok=True)
+    (base / 'releases').mkdir(exist_ok=True)
+    previous = json.loads(marker.read_text()) if marker.exists() else {}
+    if current.exists() and (not marker.exists() or previous.get('repo') != repo or not current.is_symlink()):
+        raise RuntimeError('unrecognized existing desktop installation; inspect ' + str(current))
+    latest = base / 'downloads/latest.html'
+    try:
+        fetch(root_url + '/releases/latest', latest)
+    except subprocess.CalledProcessError:
+        if os.access(current / 'AppRun', os.X_OK):
+            print('Release server unavailable; keeping the installed desktop app.', file=sys.stderr)
+            return
+        raise
+    match = re.search(r'/releases/expanded_assets/([^"<>\s]+)', latest.read_text())
+    if not match:
+        raise RuntimeError('release page has no supported asset listing')
+    tag = unquote(match[1])
+    if not re.fullmatch(r'v?[0-9][A-Za-z0-9.+_-]*', tag):
+        raise RuntimeError('unexpected release tag')
+    if previous.get('tag') == tag and os.access(current / 'AppRun', os.X_OK):
+        print(app + ' ' + tag + ' is already current.', flush=True)
+        return
+    numbers = lambda value: tuple(map(int, re.findall(r'[0-9]+', value)))
+    if update and previous.get('tag') and numbers(previous['tag']) > numbers(tag):
+        print('Keeping newer installed ' + app + ' ' + previous['tag'], flush=True)
+        return
+    listing = base / 'downloads/assets.html'
+    fetch(root_url + '/releases/expanded_assets/' + quote(tag, safe=''), listing)
+    parser = Assets()
+    parser.feed(listing.read_text())
+    machine = platform.machine()
+    arch = {'x86_64': ('x86_64' if app == 'codex-desktop' else 'amd64'),
+            'aarch64': 'arm64'}.get(machine)
+    if not arch:
+        raise RuntimeError('unsupported Linux architecture: ' + machine)
+    pattern = (r'codex-desktop-linux-' + re.escape(arch) + r'\.AppImage' if app == 'codex-desktop'
+               else r'claude-desktop-unofficial-[0-9][A-Za-z0-9.+_-]*-' + re.escape(arch) + r'\.AppImage')
+    choices = [asset for asset in parser.assets
+               if re.fullmatch(pattern, unquote(Path(urlparse(asset['url']).path).name))]
+    if len(choices) != 1:
+        raise RuntimeError('release has no unique matching AppImage with a GitHub SHA-256 digest')
+    asset = choices[0]
+    url = 'https://github.com' + asset['url'] if asset['url'].startswith('/') else asset['url']
+    expected_prefix = root_url + '/releases/download/' + quote(tag, safe='') + '/'
+    if not url.startswith(expected_prefix) or urlparse(url).hostname != 'github.com':
+        raise RuntimeError('unexpected AppImage download URL')
+    if shutil.disk_usage(base).free < 3 * 1024**3:
+        raise RuntimeError('keep at least 3 GB free in goinfre for desktop downloads and extraction')
+    archive = base / 'downloads/application.AppImage'
+    print('Downloading ' + app + ' ' + tag + ' from community project ' + repo, flush=True)
+    fetch(url, archive)
+    digest = hashlib.sha256()
+    with archive.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    if digest.hexdigest() != asset['sha256']:
+        archive.unlink(missing_ok=True)
+        raise RuntimeError('AppImage checksum mismatch; existing installation kept')
+    archive.chmod(0o755)
+    # Extract once so launching needs neither FUSE nor repeated unpacking.
+    release = base / 'releases' / tag
+    receipt = {'repo': repo, 'tag': tag, 'sha256': asset['sha256']}
+    if release.exists():
+        if not (release / '.desk-package.json').is_file() or json.loads((release / '.desk-package.json').read_text()) != receipt:
+            raise RuntimeError('unrecognized existing release directory: ' + str(release))
+    else:
+        with tempfile.TemporaryDirectory(prefix='extract-', dir=base / 'releases') as directory:
+            stage = Path(directory)
+            subprocess.run([str(archive), '--appimage-extract'], cwd=stage, check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+            content = stage / 'squashfs-root'
+            if not os.access(content / 'AppRun', os.X_OK):
+                raise RuntimeError('AppImage is missing its executable AppRun')
+            if app == 'claude-desktop':
+                # This is an extracted directory, not a FUSE mount. The
+                # community launcher's AppImage mode disables the sandbox
+                # unconditionally; use its native-package mode instead.
+                launcher = content / 'AppRun'
+                text = launcher.read_text()
+                expected = "build_electron_args 'appimage'"
+                if text.count(expected) != 1:
+                    raise RuntimeError('unsupported Claude desktop launcher layout')
+                launcher.write_text(text.replace(expected, "build_electron_args 'deb'"))
+            (content / '.desk-package.json').write_text(json.dumps(receipt))
+            content.rename(release)
+    link = base / 'current.new'
+    link.unlink(missing_ok=True)
+    link.symlink_to(release.relative_to(base))
+    link.replace(current)
+    marker.write_text(json.dumps(receipt))
+    (base / '.installed-version').write_text(tag + '\n')
+    archive.unlink(missing_ok=True)
+    print(app + ' ' + tag + ' installed. Nothing opened automatically.', flush=True)
+
+
+try:
+    main()
+except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+    sys.exit('Desktop setup failed: ' + str(error))
+AI_DESKTOP_INSTALLER
+)
+
+
+prepare_ai_desktop_unlocked() {
+  install_ai_desktop "$1" || return 1
+  ai_desktop_ready "$1" || return 1
+  write_ai_desktop_launcher "$1"
+}
+
+
+launch_ai_desktop_unlocked() (
+  local app=$1
+  shift
+  if ! ai_desktop_ready "$app"; then
+    if [ "${PREPARE_ON_LAUNCH:-1}" != 1 ]; then fail "Run desk install $app first."; return 1; fi
+    prepare_ai_desktop_unlocked "$app" || return 1
+  fi
+  local cache="$GOINFRE/cache/$app"
+  export APPDIR="$APPS/$app/current"
+  if [ "$app" = claude-desktop ]; then export CLAUDE_FORCE_SANDBOX="${CLAUDE_FORCE_SANDBOX:-1}"; fi
+  export XDG_CACHE_HOME="$cache/xdg" TMPDIR="$cache/tmp" TMP="$cache/tmp" TEMP="$cache/tmp"
+  export MESA_SHADER_CACHE_DIR="$cache/mesa" __GL_SHADER_DISK_CACHE_PATH="$cache/nvidia"
+  mkdir -p "$cache" "$XDG_CACHE_HOME" "$TMPDIR" "$MESA_SHADER_CACHE_DIR" "$__GL_SHADER_DISK_CACHE_PATH" || return 1
+  chmod 700 "$cache" || return 1
+  if [ "$app" = claude-desktop ] && { [ "${1:-}" = --version ] || [ "${1:-}" = --doctor ]; }; then
+    exec "$APPS/$app/current/AppRun" "$@"
+  fi
+  info "Opening $(label "$app") (log: $(pretty "$STATE_DIR/open-$app.log"))"
+  start_detached_process "$APPS/$app/current/AppRun" --disable-setuid-sandbox --disk-cache-dir="$cache/chromium" "$@" \
+    </dev/null >"$STATE_DIR/open-$app.log" 2>&1 &
+)
+
+
+# -------------------------------------------------------------------
+# Hermes Agent (official source releases, locked Python environment)
+# -------------------------------------------------------------------
+
+hermes_environment() {
+  local cache="$GOINFRE/cache/hermes"
+  export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+  export XDG_CACHE_HOME="$cache/xdg" TMPDIR="$cache/tmp" TMP="$cache/tmp" TEMP="$cache/tmp"
+  export UV_CACHE_DIR="$cache/uv" UV_PYTHON_INSTALL_DIR="$cache/python"
+  export HERMES_RUNTIME_DIR="$cache/runtime" PIP_CACHE_DIR="$cache/pip"
+  export npm_config_cache="$cache/npm" PYTHONPYCACHEPREFIX="$cache/pycache"
+  export UV_NO_CONFIG=1
+  mkdir -p "$cache" "$XDG_CACHE_HOME" "$TMPDIR" "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" \
+    "$HERMES_RUNTIME_DIR" "$PIP_CACHE_DIR" "$npm_config_cache" "$PYTHONPYCACHEPREFIX" || return 1
+  chmod 700 "$cache" || return 1
+  # New PM generations, tools and download caches belong in goinfre. Existing
+  # Hermes data and independently installed runtimes are never moved.
+  mkdir -p "$HERMES_HOME" || return 1
+  local directory target
+  for directory in installs tools cache image_cache audio_cache; do
+    target="$cache/$directory"
+    [ "$directory" != tools ] || target="$HERMES_RUNTIME_DIR"
+    mkdir -p "$target" || return 1
+    if [ ! -e "$HERMES_HOME/$directory" ] && [ ! -L "$HERMES_HOME/$directory" ]; then
+      ln -sT "$target" "$HERMES_HOME/$directory" || return 1
+    fi
+  done
+}
+
+
+hermes_ready() {
+  [ -x "$APPS/hermes/current/source/.hermes/bin/hermes" ] &&
+    [ -f "$APPS/hermes/current/source/hermes_cli/main.py" ] &&
+    [ -f "$APPS/hermes/current/.desk-ready" ]
+}
+
+
+hermes_running() {
+  python3 - "$APPS/hermes" "$GOINFRE/cache/hermes" <<'PY'
+import glob, os, sys
+prefix = os.fsencode(os.path.realpath(sys.argv[1]) + '/')
+python_prefix = os.path.realpath(sys.argv[2]) + '/'
+for entry in glob.iglob('/proc/[0-9]*'):
+    try:
+        if entry.rsplit('/', 1)[-1] == str(os.getpid()):
+            continue
+        if os.readlink(entry + '/exe').startswith((python_prefix, os.fsdecode(prefix))):
+            sys.exit(0)
+        with open(entry + '/cmdline', 'rb') as stream:
+            if any(arg.startswith(prefix) for arg in stream.read().split(b'\0')):
+                sys.exit(0)
+    except OSError:
+        pass
+sys.exit(1)
+PY
+}
+
+
+install_hermes() (
+  if [ "$(uname -s)" != Linux ]; then fail 'Hermes installation currently supports Linux only.'; return 1; fi
+  if hermes_ready && [ "${UPDATE_ONLY:-0}" != 1 ]; then
+    ok 'Hermes Agent is ready; use desk update hermes to check for a newer release.'
+    return 0
+  fi
+  if hermes_running; then
+    warn 'Hermes Agent is running. Exit it before installing or updating.'
+    hermes_ready
+    return $?
+  fi
+  local tool
+  for tool in git curl python3 make; do
+    if ! command -v "$tool" >/dev/null 2>&1; then fail "Hermes setup requires $tool."; return 1; fi
+  done
+  if ! command -v g++ >/dev/null 2>&1 && ! command -v clang++ >/dev/null 2>&1; then
+    fail 'Hermes terminal UI setup needs a C++ compiler (g++ or clang++). Ask an administrator to install it first.'
+    return 1
+  fi
+  # Hermes PM can repair this library through the system package manager.
+  # Check it first so a no-sudo desk install never takes that repair path.
+  if ! python3 -c 'import ctypes; ctypes.CDLL("libatomic.so.1")' >/dev/null 2>&1; then
+    fail 'Hermes needs libatomic.so.1. Ask an administrator to install libatomic1 (Ubuntu/Debian), then retry desk install hermes.'
+    return 1
+  fi
+  hermes_environment || return 1
+  info 'Checking official Hermes Agent releases'
+  python3 - "$APPS/hermes" "${UPDATE_ONLY:-0}" <<'HERMES_INSTALLER'
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+base, update = Path(sys.argv[1]).resolve(), sys.argv[2] == '1'
+repo = 'https://github.com/NousResearch/hermes-agent.git'
+current = base / 'current'
+marker = base / '.desk-release.json'
+
+
+def command(args, **kwargs):
+    return subprocess.check_output(args, text=True, stderr=subprocess.PIPE, **kwargs).strip()
+
+
+def main():
+    (base / 'downloads').mkdir(parents=True, exist_ok=True)
+    (base / 'releases').mkdir(exist_ok=True)
+    previous = json.loads(marker.read_text()) if marker.exists() else {}
+    if current.exists():
+        source = current / 'source'
+        if (command(['git', '-C', str(source), 'status', '--porcelain']) or
+                command(['git', '-C', str(source), 'rev-parse', 'HEAD']) != previous.get('commit')):
+            raise RuntimeError('Hermes has local source changes or an unrecognized revision; preserve them before updating')
+    try:
+        refs = dict(line.split()[::-1] for line in command(['git', 'ls-remote', '--tags', repo, 'v*']).splitlines())
+    except subprocess.CalledProcessError:
+        if (current / '.desk-ready').is_file():
+            print('Hermes release server unavailable; keeping the installed agent.', file=sys.stderr)
+            return
+        raise
+    versions = []
+    for ref, commit in refs.items():
+        match = re.fullmatch(r'refs/tags/v([0-9]{1,3})\.([0-9]+)\.([0-9]+)', ref)
+        if match:
+            versions.append((tuple(map(int, match.groups())), ref, refs.get(ref + '^{}', commit)))
+    if not versions:
+        raise RuntimeError('no stable Hermes source release is available')
+    version, ref, commit = max(versions)
+    if not re.fullmatch(r'[a-fA-F0-9]{40}', commit):
+        raise RuntimeError('invalid Hermes release revision')
+    version_text = '.'.join(map(str, version))
+    if previous.get('commit') == commit and (current / '.desk-ready').is_file():
+        print('Hermes ' + version_text + ' is already current.', flush=True)
+        return
+    if update and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', previous.get('version', '')):
+        if tuple(map(int, previous['version'].split('.'))) > version:
+            print('Keeping newer installed Hermes ' + previous['version'], flush=True)
+            return
+    if shutil.disk_usage(base).free < 6 * 1024**3:
+        raise RuntimeError('keep at least 6 GB free in goinfre for Hermes and its managed runtime')
+    release = base / 'releases' / commit
+    source = release / 'source'
+    if not release.exists():
+        with tempfile.TemporaryDirectory(prefix='source-', dir=base / 'releases') as directory:
+            stage = Path(directory)
+            subprocess.run(['git', 'clone', '--depth', '1', '--single-branch', '--branch', ref.rsplit('/', 1)[-1],
+                            repo, str(stage / 'source')], check=True)
+            if command(['git', '-C', str(stage / 'source'), 'rev-parse', 'HEAD']) != commit:
+                raise RuntimeError('Hermes release changed during download; retry setup')
+            (stage / '.desk-source').write_text(commit)
+            stage.rename(release)
+    if (not (release / '.desk-source').is_file() or (release / '.desk-source').read_text() != commit or
+            command(['git', '-C', str(source), 'rev-parse', 'HEAD']) != commit or
+            command(['git', '-C', str(source), 'status', '--porcelain'])):
+        raise RuntimeError('unrecognized or modified staged Hermes source')
+    installer = source / 'scripts/install.sh'
+    if not installer.is_file() or not (source / 'uv.lock').is_file() or not (source / 'pm/lock.json').is_file():
+        raise RuntimeError('this Hermes release lacks the supported installer or dependency locks')
+    # Hermes PM owns its pinned Python, dependencies and terminal UI. Use its
+    # staged protocol without re-cloning, opening setup, or installing services.
+    environment = dict(os.environ)
+    print('Preparing Hermes ' + version_text + ' with its official package manager', flush=True)
+    for stage in ('venv', 'python-deps', 'config', 'products', 'complete'):
+        subprocess.run(['bash', str(installer), '--dir', str(source), '--non-interactive',
+                        '--skip-browser', '--skip-computer-use', '--stage', stage],
+                       env=environment, check=True)
+    executable = source / '.hermes/bin/hermes'
+    if not os.access(executable, os.X_OK):
+        raise RuntimeError('Hermes did not publish its CLI entry point')
+    subprocess.run([str(executable), '--help'], env=environment, check=True,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+    (release / '.desk-ready').write_text(version_text + '\n')
+    link = base / 'current.new'
+    link.unlink(missing_ok=True)
+    link.symlink_to(release.relative_to(base))
+    link.replace(current)
+    marker.write_text(json.dumps({'version': version_text, 'commit': commit}))
+    (base / '.installed-version').write_text(version_text + '\n')
+    print('Hermes ' + version_text + ' installed. Run hermes setup to choose your provider.', flush=True)
+
+
+try:
+    main()
+except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+    sys.exit('Hermes setup failed: ' + str(error))
+HERMES_INSTALLER
+)
+
+
+launch_hermes() (
+  with_lock_wait core install_self || return 1
+  if [ "${1:-}" = update ]; then
+    if [ "$#" != 1 ]; then fail 'Use desk update hermes for this managed installation.'; return 2; fi
+    local UPDATE_ONLY=1
+    with_lock_wait hermes install_hermes
+    return $?
+  fi
+  if ! hermes_ready; then
+    if [ "${PREPARE_ON_LAUNCH:-1}" != 1 ]; then fail 'Run desk install hermes first.'; return 1; fi
+    with_lock_wait hermes prepare_hermes_unlocked || return 1
+  fi
+  hermes_environment || return 1
+  export PATH="$APPS/hermes/current/source/.hermes/bin:$PATH"
+  exec "$APPS/hermes/current/source/.hermes/bin/hermes" "$@"
+)
+
+
+# -------------------------------------------------------------------
 # Preparation
 # -------------------------------------------------------------------
 
@@ -3067,6 +3539,18 @@ prepare_flutter() {
 }
 
 
+prepare_hermes_unlocked() {
+  install_hermes || return 1
+  hermes_ready || return 1
+  write_wrapper hermes hermes
+}
+
+
+prepare_hermes() {
+  with_lock_wait hermes prepare_hermes_unlocked
+}
+
+
 prepare_all() {
   local failed=0
   local program number=0
@@ -3088,6 +3572,8 @@ prepare_all() {
       claude) prepare_claude || failed=1 ;;
       android) prepare_android || failed=1 ;;
       flutter) prepare_flutter || failed=1 ;;
+      hermes) prepare_hermes || failed=1 ;;
+      codex-desktop|claude-desktop) with_lock_wait "$program" prepare_ai_desktop_unlocked "$program" || failed=1 ;;
     esac
   done
 
@@ -3106,6 +3592,8 @@ program_executable() {
     codex|claude) native_cli_path "$1" ;;
     android) printf '%s/android/sdk/emulator/emulator\n' "$APPS" ;;
     flutter) printf '%s/flutter/sdk/bin/flutter\n' "$APPS" ;;
+    hermes) printf '%s/hermes/current/source/.hermes/bin/hermes\n' "$APPS" ;;
+    codex-desktop|claude-desktop) printf '%s/%s/current/AppRun\n' "$APPS" "$1" ;;
     *) return 2 ;;
   esac
 }
@@ -3115,6 +3603,8 @@ program_installed() {
   local executable
   if [ "$1" = android ]; then android_ready; return $?; fi
   if [ "$1" = flutter ]; then flutter_ready; return $?; fi
+  if [ "$1" = hermes ]; then hermes_ready; return $?; fi
+  case "$1" in codex-desktop|claude-desktop) ai_desktop_ready "$1"; return $? ;; esac
   executable=$(program_executable "$1") || return $?
   [ -x "$executable" ]
 }
@@ -3127,6 +3617,8 @@ program_ready() {
     codex|claude) native_cli_ready "$1" ;;
     android) android_ready ;;
     flutter) flutter_ready ;;
+    hermes) hermes_ready ;;
+    codex-desktop|claude-desktop) ai_desktop_ready "$1" ;;
     *) return 2 ;;
   esac
 }
@@ -3173,6 +3665,8 @@ update_installed_programs() {
       claude) with_lock_wait claude install_claude || failed=1 ;;
       android) with_lock_wait android install_android || failed=1 ;;
       flutter) with_lock_wait flutter install_flutter || failed=1 ;;
+      hermes) with_lock_wait hermes install_hermes || failed=1 ;;
+      codex-desktop|claude-desktop) with_lock_wait "$program" install_ai_desktop "$program" || failed=1 ;;
     esac
   done
   if [ "$failed" = 0 ]; then
@@ -3314,6 +3808,14 @@ open_app() {
       launch_flutter "$name" "$@"
       ;;
 
+    hermes)
+      launch_hermes "$@"
+      ;;
+
+    codex-desktop|claude-desktop)
+      with_lock_wait "$name" launch_ai_desktop_unlocked "$name" "$@"
+      ;;
+
     *) fail "Unknown program: $name"; return 2 ;;
   esac
 }
@@ -3432,7 +3934,7 @@ open_programs() {
       fail "$(label "$program") needs setup. Run 'desk $program' to finish setup first."
       return 1
     fi
-    case "$program" in codex|claude|flutter) terminal_count=$((terminal_count + 1)) ;; esac
+    case "$program" in codex|claude|flutter|hermes) terminal_count=$((terminal_count + 1)) ;; esac
   done
   if [ "$terminal_count" -gt 1 ] && ! find_launch_terminal; then
     fail 'Opening multiple terminal tools needs a graphical session and a terminal emulator.'
@@ -3449,13 +3951,13 @@ open_programs() {
   # Start desktop apps first, before a single AI tool takes over this terminal.
   for program in "${PROGRAMS[@]}"; do
     case "$program" in
-      code|brave|android) open_app "$program" || failed=1 ;;
+      code|brave|android|codex-desktop|claude-desktop) open_app "$program" || failed=1 ;;
     esac
   done
   [ "$failed" = 0 ] || return "$failed"
   for program in "${PROGRAMS[@]}"; do
     case "$program" in
-      codex|claude|flutter)
+      codex|claude|flutter|hermes)
         if [ "$terminal_count" = 1 ]; then
           if [ "$program" = flutter ]; then open_app flutter doctor; else open_app "$program"; fi
           return $?
@@ -3553,6 +4055,16 @@ shell_prepare_component() {
       # Avoid automatic multi-gigabyte SDK refreshes on shell startup.
       if flutter_ready; then return 0; fi
       if with_lock_try flutter prepare_flutter_unlocked; then rc=0; else rc=$?; fi
+      ;;
+
+    hermes)
+      if hermes_ready; then return 0; fi
+      if with_lock_try hermes prepare_hermes_unlocked; then rc=0; else rc=$?; fi
+      ;;
+
+    codex-desktop|claude-desktop)
+      if ai_desktop_ready "$name"; then return 0; fi
+      if with_lock_try "$name" prepare_ai_desktop_unlocked "$name"; then rc=0; else rc=$?; fi
       ;;
   esac
 
@@ -3707,6 +4219,19 @@ native_apps_running() {
     running=1
   fi
 
+  if hermes_running; then
+    warn 'Hermes Agent is running. Exit it first.'
+    running=1
+  fi
+
+  local desktop_app
+  for desktop_app in codex-desktop claude-desktop; do
+    if ai_desktop_running "$desktop_app"; then
+      warn "$(label "$desktop_app") is running. Close it first."
+      running=1
+    fi
+  done
+
   [ "$running" = 0 ]
 }
 
@@ -3766,6 +4291,12 @@ clean_reset_unlocked() {
     "$GOINFRE/cache/codex" \
     "$APPS/claude" \
     "$GOINFRE/cache/claude" \
+    "$APPS/hermes" \
+    "$GOINFRE/cache/hermes" \
+    "$APPS/codex-desktop" \
+    "$APPS/claude-desktop" \
+    "$GOINFRE/cache/codex-desktop" \
+    "$GOINFRE/cache/claude-desktop" \
     "$GOINFRE/cache/vscode-vsix"
 
   rm -rf "$APPS/flutter/sdk"
@@ -3793,6 +4324,12 @@ clean_reset_unlocked() {
 
   if managed_wrapper "$BIN_DIR/flutter"; then rm -f "$BIN_DIR/flutter"; fi
   if managed_wrapper "$BIN_DIR/dart"; then rm -f "$BIN_DIR/dart"; fi
+  if managed_wrapper "$BIN_DIR/hermes"; then rm -f "$BIN_DIR/hermes"; fi
+  local desktop_app
+  for desktop_app in codex-desktop claude-desktop; do
+    if managed_wrapper "$BIN_DIR/$desktop_app"; then rm -f "$BIN_DIR/$desktop_app"; fi
+    rm -f "$DATA_DIR/applications/$desktop_app-desk.desktop"
+  done
 
   rm -f \
     "$DATA_DIR/applications/code-native.desktop" \
@@ -3834,6 +4371,9 @@ clean_reset() {
   local held_codex=0
   local held_claude=0
   local held_flutter=0
+  local held_hermes=0
+  local extra_lock
+  local -a extra_locks=()
 
   printf '%bReset 42-desk?%b\n\n' \
     "$C_BOLD" \
@@ -3844,8 +4384,10 @@ clean_reset() {
   printf '  • desk-managed Brave\n'
   printf '  • desk-managed Codex CLI and its cache\n'
   printf '  • desk-managed Claude Code and its cache\n'
+  printf '  • desk-managed Hermes Agent and its runtime/cache (user data is kept)\n'
+  printf '  • community Codex Desktop and Claude Desktop (user profiles are kept)\n'
   printf '  • Flutter SDK (its configuration and Pub/Gradle caches are kept)\n'
-  printf '  • code/brave/codex/claude/android/flutter/dart wrappers\n'
+  printf '  • selected program wrappers, including Hermes and desktop apps\n'
   printf '  • desktop launchers\n'
   printf '  • first-run/update state\n\n'
 
@@ -3927,7 +4469,18 @@ clean_reset() {
     if lock_try_acquire flutter; then held_flutter=1; else rc=1; fi
   fi
 
+  if [ "$rc" = 0 ]; then
+    if lock_try_acquire hermes; then held_hermes=1; else rc=1; fi
+  fi
+
+  for extra_lock in codex-desktop claude-desktop; do
+    [ "$rc" = 0 ] || break
+    if lock_try_acquire "$extra_lock"; then extra_locks+=("$extra_lock"); else rc=1; fi
+  done
+
   if [ "$rc" != 0 ]; then
+    for extra_lock in "${extra_locks[@]}"; do lock_release "$extra_lock"; done
+    [ "$held_hermes" = 0 ] || lock_release hermes
     [ "$held_flutter" = 0 ] || lock_release flutter
     [ "$held_claude" = 0 ] || lock_release claude
     [ "$held_codex" = 0 ] || lock_release codex
@@ -3945,6 +4498,8 @@ clean_reset() {
     rc=$?
   fi
 
+  for extra_lock in "${extra_locks[@]}"; do lock_release "$extra_lock"; done
+  lock_release hermes
   lock_release flutter
   lock_release claude
   lock_release codex
@@ -3966,7 +4521,7 @@ show_status() {
   printf '%b42-desk%b %s\n\n' "$C_BOLD" "$C_RESET" "$VERSION"
   printf '  Storage   %s\n' "$(pretty "$GOINFRE")"
   printf '  Selected  %s\n' "$(selection_summary)"
-  printf '\n  %-12s %-9s %-12s %s\n' 'PROGRAM' 'SELECTED' 'STATE' 'VERSION'
+  printf '\n  %-26s %-9s %-12s %s\n' 'PROGRAM' 'SELECTED' 'STATE' 'VERSION'
   for program in "${ALL_PROGRAMS[@]}"; do
     choice=no
     if selected "$program"; then choice=yes; fi
@@ -3978,6 +4533,8 @@ show_status() {
       claude) executable="$APPS/claude/claude"; version="$APPS/claude/.installed-version" ;;
       android) executable="$APPS/android/sdk/emulator/emulator"; version="$APPS/android/.installed-version" ;;
       flutter) executable="$APPS/flutter/sdk/bin/flutter"; version="$APPS/flutter/.installed-version" ;;
+      hermes) executable="$APPS/hermes/current/source/.hermes/bin/hermes"; version="$APPS/hermes/.installed-version" ;;
+      codex-desktop|claude-desktop) executable="$APPS/$program/current/AppRun"; version="$APPS/$program/.installed-version" ;;
     esac
     if [ -x "$executable" ]; then
       state=installed
@@ -3986,10 +4543,12 @@ show_status() {
         brave) brave_ready || state='needs import' ;;
         android) android_ready || state='needs setup' ;;
         flutter) flutter_ready || state='needs setup' ;;
+        hermes) hermes_ready || state='needs setup' ;;
+        codex-desktop|claude-desktop) ai_desktop_ready "$program" || state='needs setup' ;;
       esac
     fi
     version=$(cat "$version" 2>/dev/null || printf '%s' '-')
-    printf '  %-12s %-9s %-12s %s\n' "$(label "$program")" "$choice" "$state" "$version"
+    printf '  %-26s %-9s %-12s %s\n' "$(label "$program")" "$choice" "$state" "$version"
     if selected "$program"; then
       command=$(command -v "$program" 2>/dev/null || true)
       if [ "$command" != "$BIN_DIR/$program" ]; then
@@ -4115,6 +4674,14 @@ main() {
 
     claude|cc|claude-code)
       open_app claude "$@"
+      ;;
+
+    hermes|hermes-agent)
+      open_app hermes "$@"
+      ;;
+
+    codex-desktop|claude-desktop)
+      open_app "$cmd" "$@"
       ;;
 
     android|emulator)

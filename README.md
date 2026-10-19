@@ -5,9 +5,11 @@
 `42-desk` is a small no-sudo workstation bootstrapper designed for shared
 42 / 1337 Linux machines.
 
-It installs your choice of native **VS Code, Brave, Codex CLI, Claude Code, Android 11 Google Play, and Flutter** inside
+It installs your choice of **VS Code, Brave, Codex CLI, Claude Code, Android 11 Google Play,
+Flutter, Hermes Agent, Codex Desktop, and Claude Desktop** inside
 `goinfre`. It migrates existing editor/browser profiles, creates familiar
-`code`, `brave`, `codex`, `claude`, `android`, `flutter`, and `dart` commands for the selected programs.
+`code`, `brave`, `codex`, `claude`, `android`, `flutter`, `dart`, `hermes`,
+`codex-desktop`, and `claude-desktop` commands for the selected programs.
 Choose what to open with `desk`, and update installed programs with `desk update`.
 Shell startup also checks your saved installation selection for updates.
 
@@ -18,6 +20,8 @@ Shell startup also checks your saved installation selection for updates.
 - Native VS Code
 - Native Brave
 - Native Codex CLI and Claude Code (no Node.js/npm required)
+- Separate Codex Desktop and Claude Desktop entries using community Linux packages
+- Hermes Agent from official source releases, with its pinned runtime and caches in `goinfre`
 - Android 11 with Google Play Store and a 1080×2424 Pixel 9 display profile
 - Stable Flutter SDK with bundled Dart and Pub/Gradle caches in `goinfre`
 - Optional Flutter build setup for Android, web, and Linux desktop
@@ -79,7 +83,7 @@ From this checkout on the new machine, run:
 ./desk install all
 ```
 
-This installs all six tools without opening them, saves your selection, and refreshes
+This installs all nine programs without opening them, saves your selection, and refreshes
 the managed `desk` command. Then run `desk` to choose what to open, or `desk android`
 to start Android. Repeating setup reuses completed Android downloads and existing
 device data. Network access is needed for missing packages, and Linux KVM access is
@@ -96,7 +100,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.9.1) and `desk st`.
+the installed command. Verify with `desk --version` (2.10.0) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -117,6 +121,9 @@ Choose your programs
    [ ] Claude Code
    [ ] Android 11 Google Play
    [ ] Flutter SDK
+   [ ] Hermes Agent
+   [ ] Codex Desktop (community Linux port)
+   [ ] Claude Desktop (community Linux port)
 
 Up/Down or j/k: move   Space: toggle
 Enter: install   a: all   n: none   Esc/q: cancel
@@ -195,7 +202,7 @@ On a fresh machine, `desk` points you to `desk install`.
 
 VS Code and Brave start independently of the launching shell. Selecting one AI
 tool runs it in the current terminal after any selected desktop apps start.
-Selecting multiple terminal tools (Codex, Claude, or Flutter) opens each in a separate terminal window. This
+Selecting multiple terminal tools (Codex CLI, Claude Code, Flutter, or Hermes) opens each in a separate terminal window. This
 requires a graphical session and a terminal emulator such as GNOME Terminal,
 Konsole, Xfce Terminal, Kitty, Alacritty, or xterm. `TERMINAL` can name a preferred
 terminal executable (without extra shell flags). Launcher errors are recorded
@@ -476,6 +483,99 @@ history in their existing locations, including a custom `CLAUDE_CONFIG_DIR`.
 Updates are managed by `desk update`; the managed launcher disables Claude's separate
 automatic updater to keep installation files in `goinfre`.
 
+### Codex Desktop and Claude Desktop on Linux
+
+```bash
+desk install                  # Add desktop apps through the checkbox picker
+desk codex-desktop             # Open Codex Desktop
+desk claude-desktop            # Open Claude Desktop
+desk update codex-desktop claude-desktop
+```
+
+These are separate entries from `codex` and `claude`, which remain terminal tools.
+Desk installs community Linux packages of the desktop applications:
+
+| Entry | Source |
+|---|---|
+| Codex Desktop | [cuongducle/codex-linux](https://github.com/cuongducle/codex-linux) |
+| Claude Desktop | [aaddrick/claude-desktop-debian](https://github.com/aaddrick/claude-desktop-debian) |
+
+The Claude package repackages the official Claude Desktop application. It is not
+a graphical wrapper around the Claude Code CLI. Community package versions can
+lag the application vendor's other platforms; desk follows each project's latest
+published release. Both the picker and desktop menu labels identify community packages.
+
+Linux x86-64 and ARM64 are supported when the source publishes a matching
+AppImage. Setup requires `curl`, `python3`, and at least **3 GB free per app** for
+download and extraction. Desk verifies GitHub's published SHA-256 asset digest
+before executing the AppImage extraction stub. Missing digests, changed URLs,
+and failed extraction stop setup and preserve any previous working release.
+No GitHub token or GitHub CLI is needed.
+
+Packages are extracted once into `$GOINFRE/apps/codex-desktop` and
+`$GOINFRE/apps/claude-desktop`; launching does not require FUSE. Runtime temporary
+files, Chromium disk caches, and shader caches use the matching directories under
+`$GOINFRE/cache`. Existing desktop application profiles, credentials, and
+conversation history retain their usual locations. Close other copies of the
+same desktop application before using desk's copy.
+
+The extracted Claude launcher uses the community package's native-package mode.
+Desk selects Chromium's unprivileged namespace sandbox instead of a root-owned
+setuid helper, and does not add `--no-sandbox`. Workstations must permit
+unprivileged user namespaces; if school policy blocks them, an administrator
+must provide the appropriate sandbox support. Desktop sessions and the apps'
+usual system libraries are required. Cowork and similar VM features may need
+additional system virtualization components.
+
+Setup creates user menu entries and `~/.local/bin` wrappers without opening the
+applications. Launch from `desk`'s picker or the direct commands. Launch logs are
+`~/.config/desk/open-codex-desktop.log` and `open-claude-desktop.log`.
+Use `claude-desktop --version` or `claude-desktop --doctor` for foreground diagnostics.
+`desk update` checks installed desktop apps too, postponing updates while they
+are running. Routine shell maintenance reuses installed copies without downloading
+them. Older release directories are retained until `desk clean`, which keeps user profiles.
+
+### Hermes Agent
+
+```bash
+desk install                  # Select Hermes Agent in the checkbox picker
+desk install hermes            # Explicitly select only Hermes Agent
+hermes setup                  # Choose a provider and configure access
+hermes                        # Start in this terminal
+desk update hermes            # Update the managed source release
+```
+
+Desk uses stable semantic-version tags from the official
+[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) repository.
+It verifies the Git revision and uses the release's staged installer and pinned
+package manager for Python, dependencies, tools, and the terminal/web UI builds.
+It does not run an unpinned installer fetched from a shell pipeline.
+Installation is noninteractive: provider setup, gateway service installation,
+browser downloads, and computer-use drivers are not started. Configure access
+yourself with `hermes setup`; optional integrations remain available through Hermes.
+
+Requirements: Linux, `bash`, `git`, `curl`, `python3`, `make`, a C++ compiler
+(`g++` or `clang++`), `libatomic.so.1`, and **6 GB free** in goinfre.
+Hermes manages its own Python/Node/tool versions. Desk checks the system
+prerequisites before invoking its installer; missing libraries or build tools
+must be supplied by an administrator. Desk does not run `sudo`.
+
+Source releases live under `$GOINFRE/apps/hermes/releases`, with a `current`
+symlink switched only after installation and CLI validation succeed. Runtimes,
+PM environments, download caches, Python bytecode, and temporary files use
+`$GOINFRE/cache/hermes`. Credentials, configuration, sessions, and memory stay in
+`~/.hermes`, or your explicit `HERMES_HOME`. New cache/tool/environment directories
+there are symlinked into goinfre. Existing Hermes directories are preserved in
+place rather than migrated or overwritten.
+
+Repeated preparation and shell maintenance reuse the installed release offline.
+`desk update hermes` stages a new release before changing the active copy;
+failed updates keep the old one. Local source modifications and running Hermes
+processes block replacement. `hermes update` delegates to desk's update flow;
+other updater options should be run through `desk update hermes`.
+Old releases remain available until `desk clean`; clean removes managed runtime
+files and caches while preserving Hermes user data and settings.
+
 ### Choose programs
 
 ```bash
@@ -484,7 +584,7 @@ desk choose                # Alias for the same picker
 desk install code codex    # Save exactly this selection and prepare it
 desk install brave         # Browser only
 desk install codex claude   # Both terminal AI tools
-desk install all           # All six programs
+desk install all           # All nine programs
 desk install none          # Disable automatic program preparation
 desk p                     # Prepare/update the saved installation selection
 desk update                # Update all currently installed programs
@@ -537,6 +637,9 @@ desk c [ARGS]        open VS Code
 desk b [ARGS]        open Brave
 desk ai [ARGS]       run Codex CLI in this terminal
 desk claude [ARGS]   run Claude Code in this terminal
+desk hermes [ARGS]   run Hermes Agent in this terminal
+desk codex-desktop   open the community Linux Codex desktop app
+desk claude-desktop  open the community Linux Claude desktop app
 desk android [ARGS]  open the managed Android emulator
 desk flutter [ARGS]  run Flutter (includes Dart)
 desk flutter-setup [TARGETS] prepare Android/web/Linux build tools
@@ -792,7 +895,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.9.1
+42-desk 2.10.0
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI
@@ -804,6 +907,9 @@ Example:
   Claude Code  no        not installed -
   Android 11 Google Play no not installed -
   Flutter SDK   no        not installed -
+  Hermes Agent no        not installed -
+  Codex Desktop (community) no not installed -
+  Claude Desktop (community) no not installed -
 
   Update log   ~/.config/desk/last-run.log
   Codex cache  /goinfre/you/cache/codex
@@ -835,6 +941,8 @@ desk clean
 - removes desk-managed Brave
 - removes desk-managed Codex CLI and its managed cache
 - removes desk-managed Claude Code and its managed cache
+- removes managed Hermes source/runtime/cache while keeping its user data
+- removes community Codex/Claude desktop packages and caches while keeping profiles
 - removes the managed `code`, `brave`, `codex`, and `claude` wrappers
 - removes the Android wrapper/desktop entry while preserving Android SDK and device data
 - removes desktop launchers
@@ -927,8 +1035,9 @@ State:
 
 ## Desktop launchers
 
-`42-desk` creates user desktop entries for selected VS Code and Brave installations.
-Codex, Claude, and Flutter run in the terminal and have no desktop launchers.
+`42-desk` creates user desktop entries for selected VS Code, Brave, Android,
+Codex Desktop, and Claude Desktop installations. Codex CLI, Claude Code,
+Flutter, and Hermes run in the terminal and have no desktop launchers.
 
 The Brave entry appears as:
 
