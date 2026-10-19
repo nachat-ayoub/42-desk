@@ -246,7 +246,7 @@ class HermesTests(AppFixtures):
         self.repo.mkdir()
         self.real_git = shutil.which('git')
         self.git('init', '-q')
-        (self.repo / '.gitignore').write_text('.hermes/\n')
+        (self.repo / '.gitignore').write_text('.hermes/\napps/desktop/release/\n')
         (self.repo / 'hermes_cli').mkdir()
         (self.repo / 'hermes_cli/main.py').write_text('# official source fixture\n')
         (self.repo / 'uv.lock').write_text('version = 1\n')
@@ -255,22 +255,24 @@ class HermesTests(AppFixtures):
         (self.repo / 'scripts').mkdir()
         (self.repo / 'scripts/install.sh').write_text('''#!/bin/bash
 set -eu
-stage= dir=
+stage= dir= desktop=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --stage) stage=$2; shift ;;
     --dir) dir=$2; shift ;;
+    --include-desktop) desktop=1 ;;
     --non-interactive|--skip-browser|--skip-computer-use) ;;
     *) exit 2 ;;
   esac
   shift
 done
-python3 - "$stage" "$dir" <<'PY'
+python3 - "$stage" "$dir" "$desktop" <<'PY'
 import json, os, pathlib, sys
 root = pathlib.Path(os.environ['DESK_FIXTURE'])
 with (root / 'hermes-stages').open('a') as stream:
     stream.write(json.dumps({'stage': sys.argv[1], 'source': sys.argv[2],
-        'home': os.environ['HERMES_HOME'], 'runtime': os.environ['HERMES_RUNTIME_DIR']}) + '\\n')
+        'home': os.environ['HERMES_HOME'], 'runtime': os.environ['HERMES_RUNTIME_DIR'],
+        'desktop': sys.argv[3] == '1'}) + '\\n')
 if os.environ.get('DESK_TEST_FAIL_STAGE') == sys.argv[1]:
     sys.exit(1)
 if sys.argv[1] == 'products':
@@ -279,7 +281,24 @@ if sys.argv[1] == 'products':
     executable.parent.mkdir(parents=True, exist_ok=True)
     executable.write_text((source / 'fixture-cli').read_text())
     executable.chmod(0o755)
+    if sys.argv[3] == '1' and not os.environ.get('DESK_TEST_SKIP_DESKTOP'):
+        unpacked = source / 'apps/desktop/release/linux-unpacked'
+        (unpacked / 'resources').mkdir(parents=True, exist_ok=True)
+        (unpacked / 'resources/app.asar').write_text('packaged desktop fixture')
+        desktop = unpacked / 'hermes'
+        desktop.write_text((source / 'fixture-desktop').read_text())
+        desktop.chmod(0o755)
 PY
+''')
+        (self.repo / 'fixture-desktop').write_text('''#!/usr/bin/env python3
+import json, os, pathlib, sys
+root = pathlib.Path(os.environ['DESK_FIXTURE'])
+(root / 'hermes-desktop-launch.json').write_text(json.dumps({
+    'args': sys.argv[1:], 'env': {name: os.environ.get(name) for name in (
+        'HERMES_HOME', 'HERMES_DESKTOP_HERMES', 'HERMES_INSTALL_ROOT', 'XDG_CONFIG_HOME',
+        'XDG_CACHE_HOME', 'TMPDIR', 'ELECTRON_CACHE', 'ELECTRON_BUILDER_CACHE',
+        'MESA_SHADER_CACHE_DIR', '__GL_SHADER_DISK_CACHE_PATH')}
+}))
 ''')
         (self.repo / 'fixture-cli').write_text('''#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -440,6 +459,133 @@ os.execv(real_git, [real_git, *args])
         self.run_desk('hermes', 'update')
         self.assertEqual((self.base / '.installed-version').read_text(), '0.2.0\n')
         self.assertFalse((self.root / 'hermes-launch.json').exists())
+
+    def test_desktop_install_builds_gui_without_opening_and_creates_menu_and_wrapper(self):
+        self.run_desk('install', 'hermes-desktop')
+        self.assertTrue((self.base / 'current/desktop').is_file())
+        self.assertTrue((self.home / '.local/bin/hermes-desktop').is_file())
+        entry = (self.home / '.local/share/applications/hermes-desktop-desk.desktop').read_text()
+        self.assertIn('Name=Hermes Desktop\n', entry)
+        self.assertIn('hermes-desktop %U', entry)
+        stages = [json.loads(line) for line in (self.root / 'hermes-stages').read_text().splitlines()]
+        self.assertEqual([stage['stage'] for stage in stages], ['venv', 'python-deps', 'config', 'products', 'complete'])
+        self.assertTrue(all(stage['desktop'] for stage in stages))
+        self.assertFalse((self.root / 'hermes-launch.json').exists())
+        self.assertFalse((self.root / 'hermes-desktop-launch.json').exists())
+        self.assertEqual((self.state / 'programs').read_text(), 'hermes-desktop\n')
+        result = self.run_desk('st')
+        self.assertRegex(result.stdout, r'Hermes Desktop\s+yes\s+installed\s+0.1.0')
+
+    def test_checklist_selects_only_hermes_desktop(self):
+        code, output = self.interact('install', [b'n' + b'j' * 9 + b' \r'])
+        self.assertEqual(code, 0, output.decode())
+        self.assertIn(b'Hermes Desktop (official)', output)
+        self.assertIn(b'Hermes Agent (CLI)', output)
+        self.assertEqual((self.state / 'programs').read_text(), 'hermes-desktop\n')
+
+    def test_desktop_launch_uses_managed_backend_and_goinfre_cache_preserving_profile(self):
+        self.run_desk('install', 'hermes-desktop')
+        profile = self.home / '.config/Hermes/connections.json'
+        profile.parent.mkdir(parents=True)
+        profile.write_text('saved desktop connections')
+        self.env['HERMES_HOME'] = str(self.root / 'custom Hermes home')
+        self.run_desk('hermes-desktop', '--local', 'argument with spaces')
+        record = self.read_record('hermes-desktop-launch.json')
+        cache = self.storage / 'cache/hermes'
+        self.assertEqual(record['args'], ['--disable-setuid-sandbox', '--disk-cache-dir=' + str(cache / 'chromium'), '--local', 'argument with spaces'])
+        self.assertEqual(record['env']['HERMES_DESKTOP_HERMES'], str(self.base / 'current/source/.hermes/bin/hermes'))
+        self.assertEqual(record['env']['HERMES_INSTALL_ROOT'], str(self.base / 'current/source'))
+        self.assertEqual(record['env']['HERMES_HOME'], self.env['HERMES_HOME'])
+        self.assertEqual(record['env']['XDG_CONFIG_HOME'], str(self.home / '.config'))
+        for key in ('TMPDIR', 'XDG_CACHE_HOME', 'ELECTRON_CACHE', 'ELECTRON_BUILDER_CACHE',
+                    'MESA_SHADER_CACHE_DIR', '__GL_SHADER_DISK_CACHE_PATH'):
+            self.assertTrue(Path(record['env'][key]).is_relative_to(cache), (key, record))
+        self.assertEqual(profile.read_text(), 'saved desktop connections')
+
+    def test_open_desktop_does_not_require_a_terminal_or_network(self):
+        self.run_desk('install', 'hermes-desktop')
+        requests = (self.root / 'git-requests').read_text()
+        stages = (self.root / 'hermes-stages').read_text()
+        (self.root / 'offline').touch()
+        self.run_desk('p')
+        self.source('setup_runtime; shell_prepare_component hermes-desktop')
+        self.run_desk('open', 'hermes-desktop')
+        self.read_record('hermes-desktop-launch.json')
+        self.assertEqual((self.state / 'open-programs').read_text(), 'hermes-desktop\n')
+        self.assertEqual((self.root / 'git-requests').read_text(), requests)
+        self.assertEqual((self.root / 'hermes-stages').read_text(), stages)
+
+    def test_can_add_desktop_to_an_existing_cli_at_the_same_version(self):
+        self.install()
+        current = (self.base / 'current').resolve()
+        self.run_desk('install', 'hermes-desktop')
+        self.assertEqual((self.base / 'current').resolve(), current)
+        self.source('setup_runtime; hermes_ready; hermes_desktop_ready')
+        self.assertTrue((self.base / 'current/.desk-desktop-ready').is_file())
+
+    def test_adding_desktop_offline_cannot_mistake_cli_for_ready_desktop(self):
+        self.install()
+        (self.root / 'offline').touch()
+        result = self.run_desk('install', 'hermes-desktop', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.base / 'current/desktop').exists())
+        self.source('setup_runtime; hermes_ready')
+
+    def test_cli_update_preserves_the_installed_desktop(self):
+        self.run_desk('install', 'hermes-desktop')
+        self.make_release('0.2.0')
+        self.run_desk('update', 'hermes')
+        self.source('setup_runtime; hermes_ready; hermes_desktop_ready')
+        self.assertEqual((self.base / '.installed-version').read_text(), '0.2.0\n')
+        self.assertEqual((self.state / 'programs').read_text(), 'hermes-desktop\n')
+        self.assertFalse((self.root / 'hermes-desktop-launch.json').exists())
+
+    def test_missing_gui_after_successful_products_stage_keeps_previous_desktop(self):
+        self.run_desk('install', 'hermes-desktop')
+        current = (self.base / 'current').resolve()
+        self.make_release('0.2.0')
+        self.env['DESK_TEST_SKIP_DESKTOP'] = '1'
+        result = self.run_desk('update', 'hermes-desktop', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Desktop build is incomplete', result.stderr)
+        self.assertEqual((self.base / 'current').resolve(), current)
+        self.assertEqual((self.base / '.installed-version').read_text(), '0.1.0\n')
+        self.env.pop('DESK_TEST_SKIP_DESKTOP')
+        self.run_desk('update', 'hermes-desktop')
+        self.source('setup_runtime; hermes_desktop_ready')
+        self.assertEqual((self.base / '.installed-version').read_text(), '0.2.0\n')
+
+    def test_running_desktop_postpones_cli_update_and_blocks_cleanup(self):
+        self.run_desk('install', 'hermes-desktop')
+        executable = (self.base / 'current/desktop').resolve()
+        executable.unlink()
+        shutil.copy2(shutil.which('sleep'), executable)
+        process = subprocess.Popen(['hermes-gui', '30'], executable=str(executable))
+        try:
+            requests = (self.root / 'git-requests').read_text()
+            result = self.run_desk('update', 'hermes')
+            self.assertIn('is running', result.stderr)
+            self.assertEqual((self.root / 'git-requests').read_text(), requests)
+            result = self.source('setup_runtime; native_apps_running', check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Hermes is running', result.stderr)
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+
+    def test_clean_removes_desktop_launcher_and_keeps_user_data(self):
+        self.run_desk('install', 'hermes-desktop')
+        config = self.home / '.hermes/config.yaml'
+        config.write_text('account settings')
+        profile = self.home / '.config/Hermes/connections.json'
+        profile.parent.mkdir(parents=True)
+        profile.write_text('desktop connections')
+        self.source('setup_runtime; clean_reset_unlocked')
+        self.assertFalse(self.base.exists())
+        self.assertFalse((self.home / '.local/bin/hermes-desktop').exists())
+        self.assertFalse((self.home / '.local/share/applications/hermes-desktop-desk.desktop').exists())
+        self.assertEqual(config.read_text(), 'account settings')
+        self.assertEqual(profile.read_text(), 'desktop connections')
 
 
 if __name__ == '__main__':

@@ -6,10 +6,10 @@
 42 / 1337 Linux machines.
 
 It installs your choice of **VS Code, Brave, Codex CLI, Claude Code, Android 11 Google Play,
-Flutter, Hermes Agent, Codex Desktop, and Claude Desktop** inside
+Flutter, Hermes Desktop, Hermes Agent (CLI), Codex Desktop, and Claude Desktop** inside
 `goinfre`. It migrates existing editor/browser profiles, creates familiar
 `code`, `brave`, `codex`, `claude`, `android`, `flutter`, `dart`, `hermes`,
-`codex-desktop`, and `claude-desktop` commands for the selected programs.
+`hermes-desktop`, `codex-desktop`, and `claude-desktop` commands for the selected programs.
 Choose what to open with `desk`, and update installed programs with `desk update`.
 Shell startup also checks your saved installation selection for updates.
 
@@ -21,6 +21,7 @@ Shell startup also checks your saved installation selection for updates.
 - Native Brave
 - Native Codex CLI and Claude Code (no Node.js/npm required)
 - Separate Codex Desktop and Claude Desktop entries using community Linux packages
+- Official Nous Research Hermes Desktop, built for Linux with its managed agent backend
 - Hermes Agent from official source releases, with its pinned runtime and caches in `goinfre`
 - Android 11 with Google Play Store and a 1080×2424 Pixel 9 display profile
 - Stable Flutter SDK with bundled Dart and Pub/Gradle caches in `goinfre`
@@ -83,7 +84,7 @@ From this checkout on the new machine, run:
 ./desk install all
 ```
 
-This installs all nine programs without opening them, saves your selection, and refreshes
+This installs all ten programs without opening them, saves your selection, and refreshes
 the managed `desk` command. Then run `desk` to choose what to open, or `desk android`
 to start Android. Repeating setup reuses completed Android downloads and existing
 device data. Network access is needed for missing packages, and Linux KVM access is
@@ -100,7 +101,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.10.0) and `desk st`.
+the installed command. Verify with `desk --version` (2.11.0) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -121,9 +122,10 @@ Choose your programs
    [ ] Claude Code
    [ ] Android 11 Google Play
    [ ] Flutter SDK
-   [ ] Hermes Agent
+   [ ] Hermes Agent (CLI)
    [ ] Codex Desktop (community Linux port)
    [ ] Claude Desktop (community Linux port)
+   [ ] Hermes Desktop (official)
 
 Up/Down or j/k: move   Space: toggle
 Enter: install   a: all   n: none   Esc/q: cancel
@@ -535,10 +537,47 @@ Use `claude-desktop --version` or `claude-desktop --doctor` for foreground diagn
 are running. Routine shell maintenance reuses installed copies without downloading
 them. Older release directories are retained until `desk clean`, which keeps user profiles.
 
-### Hermes Agent
+### Hermes Desktop (official)
 
 ```bash
-desk install                  # Select Hermes Agent in the checkbox picker
+git pull
+./desk install                # Check Hermes Desktop (official)
+# Or select just this app:
+./desk install hermes-desktop
+desk hermes-desktop           # Open the desktop chat and agent app
+desk update hermes-desktop    # Check for a newer release without opening it
+```
+
+This is the official [Nous Research Hermes Desktop](https://github.com/NousResearch/hermes-agent/tree/main/apps/desktop)
+app. Linux desktop release packages are not currently published, so desk builds
+the Electron app from the same verified, stable source release as the agent.
+The first build downloads its pinned Python/Node runtime and desktop dependencies
+and can take several minutes. It uses the prerequisites listed below, with no sudo.
+
+**Hermes Desktop** and **Hermes Agent (CLI)** are separate checkbox choices.
+Selecting Desktop installs its required agent backend; it does not open a terminal
+chat. Setup builds the app without opening it. Run `desk` afterward to check the
+apps you want to open, use `hermes-desktop`, or open the Hermes Desktop application
+menu entry. Configure your provider in the app on first use.
+
+Desktop and CLI share `$GOINFRE/apps/hermes` and `$GOINFRE/cache/hermes`.
+Electron downloads, build caches, browser disk cache, and shader caches also use
+goinfre. Desktop settings and saved connections keep their normal home-directory
+location; agent credentials, configuration, and sessions stay in `HERMES_HOME`.
+Desk pins the desktop app to its installed backend so it can reuse that runtime.
+Launch output is saved to `~/.config/desk/open-hermes-desktop.log`.
+
+Use `desk update hermes-desktop` to update the managed installation. Updating
+the CLI also rebuilds an installed desktop app, so both keep the same source
+version. A missing or failed desktop build is reported as a failure and cannot
+replace a previously working release. Close Hermes Desktop and any running
+agent processes before updating. `desk clean` preserves desktop settings and
+agent user data.
+
+### Hermes Agent (CLI)
+
+```bash
+desk install                  # Select Hermes Agent (CLI) in the checkbox picker
 desk install hermes            # Explicitly select only Hermes Agent
 hermes setup                  # Choose a provider and configure access
 hermes                        # Start in this terminal
@@ -584,7 +623,7 @@ desk choose                # Alias for the same picker
 desk install code codex    # Save exactly this selection and prepare it
 desk install brave         # Browser only
 desk install codex claude   # Both terminal AI tools
-desk install all           # All nine programs
+desk install all           # All ten programs
 desk install none          # Disable automatic program preparation
 desk p                     # Prepare/update the saved installation selection
 desk update                # Update all currently installed programs
@@ -638,6 +677,7 @@ desk b [ARGS]        open Brave
 desk ai [ARGS]       run Codex CLI in this terminal
 desk claude [ARGS]   run Claude Code in this terminal
 desk hermes [ARGS]   run Hermes Agent in this terminal
+desk hermes-desktop open the official Hermes Desktop app
 desk codex-desktop   open the community Linux Codex desktop app
 desk claude-desktop  open the community Linux Claude desktop app
 desk android [ARGS]  open the managed Android emulator
@@ -895,7 +935,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.10.0
+42-desk 2.11.0
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI
@@ -907,9 +947,10 @@ Example:
   Claude Code  no        not installed -
   Android 11 Google Play no not installed -
   Flutter SDK   no        not installed -
-  Hermes Agent no        not installed -
+  Hermes Agent (CLI) no   not installed -
   Codex Desktop (community) no not installed -
   Claude Desktop (community) no not installed -
+  Hermes Desktop no       not installed -
 
   Update log   ~/.config/desk/last-run.log
   Codex cache  /goinfre/you/cache/codex
@@ -1036,8 +1077,8 @@ State:
 ## Desktop launchers
 
 `42-desk` creates user desktop entries for selected VS Code, Brave, Android,
-Codex Desktop, and Claude Desktop installations. Codex CLI, Claude Code,
-Flutter, and Hermes run in the terminal and have no desktop launchers.
+Codex Desktop, Claude Desktop, and Hermes Desktop installations. Codex CLI,
+Claude Code, Flutter, and Hermes Agent (CLI) run in the terminal and have no desktop launchers.
 
 The Brave entry appears as:
 

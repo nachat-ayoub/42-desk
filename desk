@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.10.0"
+VERSION="2.11.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -42,7 +42,7 @@ PROGRAMS_FILE="$STATE_DIR/programs"
 OPEN_PROGRAMS_FILE="$STATE_DIR/open-programs"
 # Existing installations keep their original two-program selection.
 PROGRAMS=(code brave)
-ALL_PROGRAMS=(code brave codex claude android flutter hermes codex-desktop claude-desktop)
+ALL_PROGRAMS=(code brave codex claude android flutter hermes codex-desktop claude-desktop hermes-desktop)
 PICKER_PROGRAMS=("${ALL_PROGRAMS[@]}")
 
 AUTO_CHECK_SECONDS=$((12 * 60 * 60))
@@ -189,7 +189,8 @@ label() {
     claude) echo "Claude Code" ;;
     android) echo "Android 11 Google Play" ;;
     flutter) echo "Flutter SDK" ;;
-    hermes) echo "Hermes Agent" ;;
+    hermes) echo "Hermes Agent (CLI)" ;;
+    hermes-desktop) echo "Hermes Desktop" ;;
     codex-desktop) echo "Codex Desktop (community)" ;;
     claude-desktop) echo "Claude Desktop (community)" ;;
     *) echo "$1" ;;
@@ -223,6 +224,7 @@ usage() {
   printf '  desk ai [ARGS]       run Codex CLI in this terminal\n'
   printf '  desk claude [ARGS]   run Claude Code in this terminal\n'
   printf '  desk hermes [ARGS]   run Hermes Agent in this terminal\n'
+  printf '  desk hermes-desktop open the official Hermes Desktop app\n'
   printf '  desk codex-desktop   open the community Linux Codex desktop app\n'
   printf '  desk claude-desktop  open the community Linux Claude desktop app\n'
   printf '  desk android [ARGS] open Android 11 Google Play (Pixel 9 display)\n'
@@ -370,7 +372,7 @@ import tty
 
 title, action = sys.argv[1:3]
 separator = sys.argv.index("--", 3)
-labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play", "flutter": "Flutter SDK", "hermes": "Hermes Agent",
+labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play", "flutter": "Flutter SDK", "hermes": "Hermes Agent (CLI)", "hermes-desktop": "Hermes Desktop (official)",
           "codex-desktop": "Codex Desktop (community Linux port)", "claude-desktop": "Claude Desktop (community Linux port)",
           "android-toolchain": "Android app builds", "web-toolchain": "Web (Brave / Chrome)", "linux-toolchain": "Linux desktop"}
 programs = [(name, labels[name]) for name in sys.argv[3:separator]]
@@ -514,6 +516,7 @@ show_next_steps() {
   selected android && printf '  Android    android  (Google Play, 1080x2424 display)\n'
   selected flutter && printf '  Flutter    flutter doctor   |   dart --version\n'
   selected hermes && printf '  Hermes     hermes setup   (choose your provider on first use)\n'
+  selected hermes-desktop && printf '  Hermes Desktop  hermes-desktop\n'
   selected codex-desktop && printf '  Codex Desktop   codex-desktop\n'
   selected claude-desktop && printf '  Claude Desktop  claude-desktop\n'
   printf '\nOpen programs: desk   |   Update installed programs: desk update\n'
@@ -1810,6 +1813,7 @@ write_launchers() {
   if selected codex; then write_wrapper codex codex || return 1; fi
   if selected claude; then write_wrapper claude claude || return 1; fi
   if selected hermes; then write_wrapper hermes hermes || return 1; fi
+  if selected hermes-desktop; then write_hermes_desktop_launcher || return 1; fi
   local desktop_app
   for desktop_app in codex-desktop claude-desktop; do
     if selected "$desktop_app"; then write_ai_desktop_launcher "$desktop_app" || return 1; fi
@@ -3231,9 +3235,15 @@ hermes_environment() {
   export UV_CACHE_DIR="$cache/uv" UV_PYTHON_INSTALL_DIR="$cache/python"
   export HERMES_RUNTIME_DIR="$cache/runtime" PIP_CACHE_DIR="$cache/pip"
   export npm_config_cache="$cache/npm" PYTHONPYCACHEPREFIX="$cache/pycache"
+  export ELECTRON_CACHE="$cache/electron" ELECTRON_BUILDER_CACHE="$cache/electron-builder"
+  # Electron's downloader needs an opt-in to honor the shell's proxy settings.
+  if [ -n "${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}" ]; then
+    export ELECTRON_GET_USE_PROXY="${ELECTRON_GET_USE_PROXY:-1}"
+  fi
   export UV_NO_CONFIG=1
   mkdir -p "$cache" "$XDG_CACHE_HOME" "$TMPDIR" "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" \
-    "$HERMES_RUNTIME_DIR" "$PIP_CACHE_DIR" "$npm_config_cache" "$PYTHONPYCACHEPREFIX" || return 1
+    "$HERMES_RUNTIME_DIR" "$PIP_CACHE_DIR" "$npm_config_cache" "$PYTHONPYCACHEPREFIX" \
+    "$ELECTRON_CACHE" "$ELECTRON_BUILDER_CACHE" || return 1
   chmod 700 "$cache" || return 1
   # New PM generations, tools and download caches belong in goinfre. Existing
   # Hermes data and independently installed runtimes are never moved.
@@ -3254,6 +3264,29 @@ hermes_ready() {
   [ -x "$APPS/hermes/current/source/.hermes/bin/hermes" ] &&
     [ -f "$APPS/hermes/current/source/hermes_cli/main.py" ] &&
     [ -f "$APPS/hermes/current/.desk-ready" ]
+}
+
+
+hermes_desktop_ready() {
+  hermes_ready && [ -x "$APPS/hermes/current/desktop" ] &&
+    [ -f "$APPS/hermes/current/.desk-desktop-ready" ]
+}
+
+
+write_hermes_desktop_launcher() {
+  write_wrapper hermes-desktop hermes-desktop || return 1
+  mkdir -p "$DATA_DIR/applications" || return 1
+  cat > "$DATA_DIR/applications/hermes-desktop-desk.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Hermes Desktop
+Comment=Official Nous Research chat and agent app managed by 42-desk
+Exec="$BIN_DIR/desk" hermes-desktop %U
+Icon=$APPS/hermes/current/source/apps/desktop/assets/icon.png
+StartupWMClass=com.nousresearch.hermes
+Categories=Development;Utility;
+Terminal=false
+EOF
 }
 
 
@@ -3279,14 +3312,24 @@ PY
 
 
 install_hermes() (
+  local component=${1:-hermes} ready=hermes_ready desktop=0
+  if [ "$component" = hermes-desktop ]; then ready=hermes_desktop_ready; desktop=1; fi
+  # Updating the CLI must keep an already installed desktop app usable.
+  if [ -f "$APPS/hermes/current/.desk-desktop-ready" ]; then desktop=1; fi
   if [ "$(uname -s)" != Linux ]; then fail 'Hermes installation currently supports Linux only.'; return 1; fi
-  if hermes_ready && [ "${UPDATE_ONLY:-0}" != 1 ]; then
-    ok 'Hermes Agent is ready; use desk update hermes to check for a newer release.'
+  if [ "$desktop" = 1 ]; then
+    case "$(uname -m)" in
+      x86_64|aarch64|arm64) ;;
+      *) fail 'Hermes Desktop supports Linux x86_64 and ARM64.'; return 1 ;;
+    esac
+  fi
+  if "$ready" && [ "${UPDATE_ONLY:-0}" != 1 ]; then
+    ok "$(label "$component") is ready; use desk update $component to check for a newer release."
     return 0
   fi
   if hermes_running; then
-    warn 'Hermes Agent is running. Exit it before installing or updating.'
-    hermes_ready
+    warn 'Hermes is running. Exit its desktop, terminal, and background processes before installing or updating.'
+    "$ready"
     return $?
   fi
   local tool
@@ -3304,8 +3347,8 @@ install_hermes() (
     return 1
   fi
   hermes_environment || return 1
-  info 'Checking official Hermes Agent releases'
-  python3 - "$APPS/hermes" "${UPDATE_ONLY:-0}" <<'HERMES_INSTALLER'
+  info "Checking official $(label "$component") releases"
+  python3 - "$APPS/hermes" "${UPDATE_ONLY:-0}" "$desktop" <<'HERMES_INSTALLER'
 import json
 import os
 from pathlib import Path
@@ -3316,6 +3359,7 @@ import sys
 import tempfile
 
 base, update = Path(sys.argv[1]).resolve(), sys.argv[2] == '1'
+desktop = sys.argv[3] == '1'
 repo = 'https://github.com/NousResearch/hermes-agent.git'
 current = base / 'current'
 marker = base / '.desk-release.json'
@@ -3323,6 +3367,12 @@ marker = base / '.desk-release.json'
 
 def command(args, **kwargs):
     return subprocess.check_output(args, text=True, stderr=subprocess.PIPE, **kwargs).strip()
+
+
+def ready(release):
+    return ((release / '.desk-ready').is_file() and
+            (not desktop or ((release / '.desk-desktop-ready').is_file() and
+                             os.access(release / 'desktop', os.X_OK))))
 
 
 def main():
@@ -3337,7 +3387,7 @@ def main():
     try:
         refs = dict(line.split()[::-1] for line in command(['git', 'ls-remote', '--tags', repo, 'v*']).splitlines())
     except subprocess.CalledProcessError:
-        if (current / '.desk-ready').is_file():
+        if ready(current):
             print('Hermes release server unavailable; keeping the installed agent.', file=sys.stderr)
             return
         raise
@@ -3352,13 +3402,15 @@ def main():
     if not re.fullmatch(r'[a-fA-F0-9]{40}', commit):
         raise RuntimeError('invalid Hermes release revision')
     version_text = '.'.join(map(str, version))
-    if previous.get('commit') == commit and (current / '.desk-ready').is_file():
+    if previous.get('commit') == commit and ready(current):
         print('Hermes ' + version_text + ' is already current.', flush=True)
         return
     if update and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', previous.get('version', '')):
         if tuple(map(int, previous['version'].split('.'))) > version:
-            print('Keeping newer installed Hermes ' + previous['version'], flush=True)
-            return
+            if ready(current):
+                print('Keeping newer installed Hermes ' + previous['version'], flush=True)
+                return
+            raise RuntimeError('the release server is older than this install; retry when it is current')
     if shutil.disk_usage(base).free < 6 * 1024**3:
         raise RuntimeError('keep at least 6 GB free in goinfre for Hermes and its managed runtime')
     release = base / 'releases' / commit
@@ -3385,13 +3437,30 @@ def main():
     print('Preparing Hermes ' + version_text + ' with its official package manager', flush=True)
     for stage in ('venv', 'python-deps', 'config', 'products', 'complete'):
         subprocess.run(['bash', str(installer), '--dir', str(source), '--non-interactive',
-                        '--skip-browser', '--skip-computer-use', '--stage', stage],
+                        '--skip-browser', '--skip-computer-use', '--stage', stage,
+                        *(['--include-desktop'] if desktop else [])],
                        env=environment, check=True)
     executable = source / '.hermes/bin/hermes'
     if not os.access(executable, os.X_OK):
         raise RuntimeError('Hermes did not publish its CLI entry point')
     subprocess.run([str(executable), '--help'], env=environment, check=True,
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+    if desktop:
+        # The upstream products stage can defer a failed GUI build while still
+        # publishing a working CLI. Never report Desktop ready in that case.
+        import platform
+        unpacked = {'x86_64': 'linux-unpacked', 'aarch64': 'linux-arm64-unpacked',
+                    'arm64': 'linux-arm64-unpacked'}.get(platform.machine())
+        if not unpacked:
+            raise RuntimeError('Hermes Desktop supports Linux x86_64 and ARM64')
+        candidates = [source / 'apps/desktop/release' / unpacked / name for name in ('hermes', 'Hermes')]
+        binary = next((path for path in candidates if os.access(path, os.X_OK)), None)
+        if binary is None or not (binary.parent / 'resources/app.asar').is_file():
+            raise RuntimeError('Hermes Desktop build is incomplete; check the build output and retry desk install hermes-desktop')
+        link = release / 'desktop'
+        link.unlink(missing_ok=True)
+        link.symlink_to(binary.relative_to(release))
+        (release / '.desk-desktop-ready').write_text(version_text + '\n')
     (release / '.desk-ready').write_text(version_text + '\n')
     link = base / 'current.new'
     link.unlink(missing_ok=True)
@@ -3399,7 +3468,8 @@ def main():
     link.replace(current)
     marker.write_text(json.dumps({'version': version_text, 'commit': commit}))
     (base / '.installed-version').write_text(version_text + '\n')
-    print('Hermes ' + version_text + ' installed. Run hermes setup to choose your provider.', flush=True)
+    hint = 'Run desk hermes-desktop to open the app.' if desktop else 'Run hermes setup to choose your provider.'
+    print('Hermes ' + version_text + ' installed. ' + hint, flush=True)
 
 
 try:
@@ -3425,6 +3495,27 @@ launch_hermes() (
   hermes_environment || return 1
   export PATH="$APPS/hermes/current/source/.hermes/bin:$PATH"
   exec "$APPS/hermes/current/source/.hermes/bin/hermes" "$@"
+)
+
+
+launch_hermes_desktop_unlocked() (
+  if ! hermes_desktop_ready; then
+    if [ "${PREPARE_ON_LAUNCH:-1}" != 1 ]; then fail 'Run desk install hermes-desktop first.'; return 1; fi
+    prepare_hermes_desktop_unlocked || return 1
+  fi
+  hermes_environment || return 1
+  # Pin the app to this installation's managed backend instead of allowing
+  # first launch to install another copy under the home directory.
+  export HERMES_DESKTOP_HERMES="$APPS/hermes/current/source/.hermes/bin/hermes"
+  export HERMES_INSTALL_ROOT="$APPS/hermes/current/source"
+  export PATH="$APPS/hermes/current/source/.hermes/bin:$PATH"
+  export MESA_SHADER_CACHE_DIR="$GOINFRE/cache/hermes/mesa"
+  export __GL_SHADER_DISK_CACHE_PATH="$GOINFRE/cache/hermes/nvidia"
+  mkdir -p "$MESA_SHADER_CACHE_DIR" "$__GL_SHADER_DISK_CACHE_PATH" || return 1
+  info "Opening Hermes Desktop (log: $(pretty "$STATE_DIR/open-hermes-desktop.log"))"
+  start_detached_process "$APPS/hermes/current/desktop" --disable-setuid-sandbox \
+    --disk-cache-dir="$GOINFRE/cache/hermes/chromium" "$@" \
+    </dev/null >"$STATE_DIR/open-hermes-desktop.log" 2>&1 &
 )
 
 
@@ -3551,6 +3642,13 @@ prepare_hermes() {
 }
 
 
+prepare_hermes_desktop_unlocked() {
+  install_hermes hermes-desktop || return 1
+  hermes_desktop_ready || return 1
+  write_hermes_desktop_launcher
+}
+
+
 prepare_all() {
   local failed=0
   local program number=0
@@ -3573,6 +3671,7 @@ prepare_all() {
       android) prepare_android || failed=1 ;;
       flutter) prepare_flutter || failed=1 ;;
       hermes) prepare_hermes || failed=1 ;;
+      hermes-desktop) with_lock_wait hermes prepare_hermes_desktop_unlocked || failed=1 ;;
       codex-desktop|claude-desktop) with_lock_wait "$program" prepare_ai_desktop_unlocked "$program" || failed=1 ;;
     esac
   done
@@ -3593,6 +3692,7 @@ program_executable() {
     android) printf '%s/android/sdk/emulator/emulator\n' "$APPS" ;;
     flutter) printf '%s/flutter/sdk/bin/flutter\n' "$APPS" ;;
     hermes) printf '%s/hermes/current/source/.hermes/bin/hermes\n' "$APPS" ;;
+    hermes-desktop) printf '%s/hermes/current/desktop\n' "$APPS" ;;
     codex-desktop|claude-desktop) printf '%s/%s/current/AppRun\n' "$APPS" "$1" ;;
     *) return 2 ;;
   esac
@@ -3604,6 +3704,7 @@ program_installed() {
   if [ "$1" = android ]; then android_ready; return $?; fi
   if [ "$1" = flutter ]; then flutter_ready; return $?; fi
   if [ "$1" = hermes ]; then hermes_ready; return $?; fi
+  if [ "$1" = hermes-desktop ]; then hermes_desktop_ready; return $?; fi
   case "$1" in codex-desktop|claude-desktop) ai_desktop_ready "$1"; return $? ;; esac
   executable=$(program_executable "$1") || return $?
   [ -x "$executable" ]
@@ -3618,6 +3719,7 @@ program_ready() {
     android) android_ready ;;
     flutter) flutter_ready ;;
     hermes) hermes_ready ;;
+    hermes-desktop) hermes_desktop_ready ;;
     codex-desktop|claude-desktop) ai_desktop_ready "$1" ;;
     *) return 2 ;;
   esac
@@ -3666,6 +3768,7 @@ update_installed_programs() {
       android) with_lock_wait android install_android || failed=1 ;;
       flutter) with_lock_wait flutter install_flutter || failed=1 ;;
       hermes) with_lock_wait hermes install_hermes || failed=1 ;;
+      hermes-desktop) with_lock_wait hermes install_hermes hermes-desktop || failed=1 ;;
       codex-desktop|claude-desktop) with_lock_wait "$program" install_ai_desktop "$program" || failed=1 ;;
     esac
   done
@@ -3812,6 +3915,11 @@ open_app() {
       launch_hermes "$@"
       ;;
 
+    hermes-desktop)
+      with_lock_wait core install_self || return 1
+      with_lock_wait hermes launch_hermes_desktop_unlocked "$@"
+      ;;
+
     codex-desktop|claude-desktop)
       with_lock_wait "$name" launch_ai_desktop_unlocked "$name" "$@"
       ;;
@@ -3951,7 +4059,7 @@ open_programs() {
   # Start desktop apps first, before a single AI tool takes over this terminal.
   for program in "${PROGRAMS[@]}"; do
     case "$program" in
-      code|brave|android|codex-desktop|claude-desktop) open_app "$program" || failed=1 ;;
+      code|brave|android|codex-desktop|claude-desktop|hermes-desktop) open_app "$program" || failed=1 ;;
     esac
   done
   [ "$failed" = 0 ] || return "$failed"
@@ -4060,6 +4168,11 @@ shell_prepare_component() {
     hermes)
       if hermes_ready; then return 0; fi
       if with_lock_try hermes prepare_hermes_unlocked; then rc=0; else rc=$?; fi
+      ;;
+
+    hermes-desktop)
+      if hermes_desktop_ready; then return 0; fi
+      if with_lock_try hermes prepare_hermes_desktop_unlocked; then rc=0; else rc=$?; fi
       ;;
 
     codex-desktop|claude-desktop)
@@ -4220,7 +4333,7 @@ native_apps_running() {
   fi
 
   if hermes_running; then
-    warn 'Hermes Agent is running. Exit it first.'
+    warn 'Hermes is running. Close its desktop, terminal, and background processes first.'
     running=1
   fi
 
@@ -4325,6 +4438,8 @@ clean_reset_unlocked() {
   if managed_wrapper "$BIN_DIR/flutter"; then rm -f "$BIN_DIR/flutter"; fi
   if managed_wrapper "$BIN_DIR/dart"; then rm -f "$BIN_DIR/dart"; fi
   if managed_wrapper "$BIN_DIR/hermes"; then rm -f "$BIN_DIR/hermes"; fi
+  if managed_wrapper "$BIN_DIR/hermes-desktop"; then rm -f "$BIN_DIR/hermes-desktop"; fi
+  rm -f "$DATA_DIR/applications/hermes-desktop-desk.desktop"
   local desktop_app
   for desktop_app in codex-desktop claude-desktop; do
     if managed_wrapper "$BIN_DIR/$desktop_app"; then rm -f "$BIN_DIR/$desktop_app"; fi
@@ -4534,6 +4649,7 @@ show_status() {
       android) executable="$APPS/android/sdk/emulator/emulator"; version="$APPS/android/.installed-version" ;;
       flutter) executable="$APPS/flutter/sdk/bin/flutter"; version="$APPS/flutter/.installed-version" ;;
       hermes) executable="$APPS/hermes/current/source/.hermes/bin/hermes"; version="$APPS/hermes/.installed-version" ;;
+      hermes-desktop) executable="$APPS/hermes/current/desktop"; version="$APPS/hermes/.installed-version" ;;
       codex-desktop|claude-desktop) executable="$APPS/$program/current/AppRun"; version="$APPS/$program/.installed-version" ;;
     esac
     if [ -x "$executable" ]; then
@@ -4544,6 +4660,7 @@ show_status() {
         android) android_ready || state='needs setup' ;;
         flutter) flutter_ready || state='needs setup' ;;
         hermes) hermes_ready || state='needs setup' ;;
+        hermes-desktop) hermes_desktop_ready || state='needs setup' ;;
         codex-desktop|claude-desktop) ai_desktop_ready "$program" || state='needs setup' ;;
       esac
     fi
@@ -4678,6 +4795,10 @@ main() {
 
     hermes|hermes-agent)
       open_app hermes "$@"
+      ;;
+
+    hermes-desktop)
+      open_app hermes-desktop "$@"
       ;;
 
     codex-desktop|claude-desktop)
