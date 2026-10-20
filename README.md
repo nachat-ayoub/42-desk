@@ -116,7 +116,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.14.2) and `desk st`.
+the installed command. Verify with `desk --version` (2.14.3) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -568,10 +568,40 @@ additional system virtualization components.
 Setup creates user menu entries and `~/.local/bin` wrappers without opening the
 applications. Launch from `desk`'s picker or the direct commands. Launch logs are
 `~/.config/desk/open-codex-desktop.log` and `open-claude-desktop.log`.
+Codex also writes detailed application logs under
+`${XDG_STATE_HOME:-$HOME/.local/state}/codex/logs/`; the launcher log can be empty.
 Use `claude-desktop --version` or `claude-desktop --doctor` for foreground diagnostics.
 `desk update` checks installed desktop apps too, postponing updates while they
 are running. Routine shell maintenance reuses installed copies without downloading
 them. Older release directories are retained until `desk clean`, which keeps user profiles.
+
+#### Repeated Codex database recovery messages
+
+If **Codex rebuilt its local database** appears on every launch, quit the app
+completely (including its tray icon), then run this from the updated checkout:
+
+```bash
+git pull
+./desk codex-desktop --doctor
+```
+
+The foreground report shows the installed build, effective `CODEX_HOME`, physical
+profile location, database files, free space, quota output when available, and
+the most recently modified application logs. It also shows the migrated goinfre
+home and dangling symlink targets without running a migration. It reports a missing database
+instead of trying to open a nonexistent file. `CODEX_SQLITE_HOME` configures the
+app-server database; this inspected desktop build uses `CODEX_HOME/sqlite/codex.db`
+for its separate desktop database.
+
+For supported package layouts, the report tests disposable copies of the current
+database and newest backup with the installed app's own SQLite code. It also
+creates and reopens a disposable database on the same filesystem as the profile,
+which can expose native-library, permission, quota, or SQLite initialization errors.
+Temporary probes are cleaned up. Existing databases, recovery backups, credentials,
+and conversations stay in place; no conversation rows are printed.
+
+Send the report when asking for help. A recovery popup alone does not identify
+the cause, and moving the profile or repeatedly resetting it can obscure the problem.
 
 ### OpenMausBot
 
@@ -759,6 +789,7 @@ desk hermes [ARGS]   run Hermes Agent in this terminal
 desk hermes-desktop open the official Hermes Desktop app
 desk openmausbot     open OpenMausBot desktop
 desk codex-desktop   open the community Linux Codex desktop app
+desk codex-desktop --doctor diagnose desktop/database startup
 desk claude-desktop  open the community Linux Claude desktop app
 desk android [ARGS]  open the managed Android emulator
 desk flutter [ARGS]  run Flutter (includes Dart)
@@ -1069,7 +1100,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.14.2
+42-desk 2.14.3
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI

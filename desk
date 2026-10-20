@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.14.2"
+VERSION="2.14.3"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -230,6 +230,7 @@ usage() {
   printf '  desk hermes-desktop open the official Hermes Desktop app\n'
   printf '  desk openmausbot     open OpenMausBot desktop\n'
   printf '  desk codex-desktop   open the community Linux Codex desktop app\n'
+  printf '  desk codex-desktop --doctor  diagnose desktop/database startup\n'
   printf '  desk claude-desktop  open the community Linux Claude desktop app\n'
   printf '  desk android [ARGS] open Android 11 Google Play (Pixel 9 display)\n'
   printf '  desk flutter [ARGS] run Flutter (includes Dart)\n'
@@ -3491,9 +3492,182 @@ prepare_ai_desktop_unlocked() {
 }
 
 
+codex_desktop_doctor() {
+  if ai_desktop_running codex-desktop; then
+    fail 'Quit Codex Desktop, including its tray icon, then retry --doctor.'
+    return 1
+  fi
+  python3 - "$APPS/codex-desktop" "$GOINFRE/cache/codex-desktop/tmp" <<'CODEX_DESKTOP_DOCTOR'
+from datetime import datetime, timezone
+import heapq
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+base, scratch = map(Path, sys.argv[1:])
+home = Path.home()
+codex_home = Path(os.environ.get('CODEX_HOME', str(home / '.codex'))).expanduser().absolute()
+database = codex_home / 'sqlite/codex.db'
+migrated = base.parent.parent / 'data/codex-desktop/codex-home'
+print('Codex Desktop database diagnostics', flush=True)
+print('Installed version:', (base / '.installed-version').read_text().strip()
+      if (base / '.installed-version').is_file() else 'not installed')
+print('CODEX_HOME:', codex_home)
+print('Physical home:', codex_home.resolve())
+print('Desk migrated home:', migrated)
+print('Desktop database:', database)
+print('App-server CODEX_SQLITE_HOME:', os.environ.get('CODEX_SQLITE_HOME', 'not set'))
+
+def describe(path):
+    if path.is_symlink():
+        print(f'  {path}: symlink to {os.readlink(path)}')
+    try:
+        stat = path.stat()
+        kind = 'file' if path.is_file() else 'directory' if path.is_dir() else 'other'
+        print(f'  {path}: {kind}, {stat.st_size} bytes, mode {stat.st_mode & 0o777:o}, uid {stat.st_uid}')
+        if path.is_symlink():
+            print('    symlink target:', path.resolve())
+    except FileNotFoundError:
+        print(f'  {path}: missing')
+    except OSError as error:
+        print(f'  {path}: {error}')
+
+for path in (codex_home, migrated, database.parent, database, Path(str(database) + '-wal'), Path(str(database) + '-shm')):
+    describe(path)
+parent = database.parent
+while not parent.exists() and parent != parent.parent:
+    parent = parent.parent
+try:
+    print('Free bytes on database filesystem:', shutil.disk_usage(parent).free)
+except OSError as error:
+    print('Free-space check:', error)
+if shutil.which('quota'):
+    try:
+        result = subprocess.run(['quota', '-s'], capture_output=True, text=True, timeout=5)
+        print('Quota:', (result.stdout + result.stderr).strip() or 'no quota report returned')
+    except (OSError, subprocess.SubprocessError) as error:
+        print('Quota check:', error)
+
+# Read actual app logs by modification time, rather than taking the tail of
+# an unordered recursive search (which can return weeks-old startup messages).
+roots = {home / '.local/state/codex/logs',
+         Path(os.environ.get('XDG_STATE_HOME', str(home / '.local/state'))) / 'codex/logs'}
+logs = []
+for root in roots:
+    print('Desktop log directory:', root)
+    if root.is_dir():
+        try:
+            logs.extend((path.stat().st_mtime, path) for path in root.rglob('*.log') if path.is_file())
+        except OSError as error:
+            print('  Log scan:', error)
+for modified, path in heapq.nlargest(4, logs):
+    print('Recent log:', path, datetime.fromtimestamp(modified, timezone.utc).isoformat())
+    try:
+        with path.open('rb') as stream:
+            stream.seek(max(0, path.stat().st_size - 65536))
+            lines = stream.read().decode('utf-8', errors='replace').splitlines()
+        matches = [line for line in lines if re.search(r'sqlite|database|corrupt|notadb|edquot|enospc|no space', line, re.I)]
+        for line in matches[-12:]:
+            print('  ' + line[:1500])
+        if not matches:
+            print('  No database-related entries in the last 64 KiB.')
+    except OSError as error:
+        print('  Log read:', error)
+
+# Exercise the installed build's own SQLite module without starting Electron
+# windows. Original databases and backups are only copied, never opened by it.
+binary = base / 'current/codex-desktop.bin'
+modules = base / 'current/resources/app/.vite/build'
+module = None
+for path in sorted(modules.glob('src-*.js')):
+    text = path.read_text(errors='replace')
+    signatures = ('Object.defineProperty(exports,"Fr",{enumerable:!0,get:function(){return HA}})',
+                  'Object.defineProperty(exports,"Ir",{enumerable:!0,get:function(){return UA}})',
+                  'Object.defineProperty(exports,"Pr",{enumerable:!0,get:function(){return _ne}})')
+    if all(signature in text for signature in signatures) and 'function HA(e){return(0,i.join)(_O(),`sqlite`,' in text:
+        module = path.resolve()
+        break
+if not os.access(binary, os.X_OK) or module is None:
+    print('Native SQLite probe: unavailable for this package layout; no application files were changed.')
+    sys.exit(1)
+
+script = r'''
+const path=require('node:path');
+const m=require(process.argv[1]);
+const expected=path.join(process.env.CODEX_HOME,'sqlite','codex.db');
+try {
+  if(m.Fr()!==expected) throw Error('Probe refused an unexpected database path');
+  const checks=[];
+  for(let i=0;i<2;i++) {
+    const db=m.Ir();
+    checks.push({integrity:db.prepare('PRAGMA quick_check').all(),schema:db.prepare('PRAGMA user_version').get()});
+    m.Pr();
+  }
+  if(checks.some(check=>check.integrity.length!==1 || check.integrity[0].quick_check!=='ok')) {
+    throw Error('SQLite integrity check failed: '+JSON.stringify(checks));
+  }
+  console.log(JSON.stringify({ok:true,checks}));
+} catch(error) {
+  try { m.Pr(); } catch {}
+  console.log(JSON.stringify({ok:false,code:error.code,message:error.message}));
+  process.exitCode=1;
+}
+'''
+
+def probe(label, directory, source=None):
+    print(label + ':', flush=True)
+    try:
+        with tempfile.TemporaryDirectory(prefix='.desk-sqlite-probe-', dir=directory) as temporary:
+            profile = Path(temporary) / 'profile'
+            target = profile / 'sqlite/codex.db'
+            target.parent.mkdir(parents=True)
+            if source is not None:
+                for suffix in ('', '-wal', '-shm'):
+                    original = Path(str(source) + suffix)
+                    if original.is_file():
+                        shutil.copy2(original, Path(str(target) + suffix))
+            environment = dict(os.environ, CODEX_HOME=str(profile), ELECTRON_RUN_AS_NODE='1',
+                               BUILD_FLAVOR='prod', NODE_ENV='production')
+            result = subprocess.run([str(binary.resolve()), '-e', script, str(module)],
+                                    env=environment, capture_output=True, text=True, timeout=25)
+            print('  ' + (result.stdout.strip() or result.stderr.strip() or f'exit {result.returncode}')[:4000])
+            return result.returncode == 0
+    except (OSError, subprocess.SubprocessError) as error:
+        print(' ', error)
+        return False
+
+scratch.mkdir(parents=True, exist_ok=True)
+healthy = ((not (database.exists() or database.is_symlink()) or database.is_file()) and
+           not (codex_home.is_symlink() and not codex_home.exists()))
+if database.is_file():
+    healthy = probe('Current database (disposable copy)', scratch, database)
+backups = database.parent / 'db-backups'
+if backups.is_dir():
+    candidates = [(path.stat().st_mtime, path) for path in backups.glob('*/codex.db') if path.is_file()]
+    if candidates:
+        _, latest = max(candidates)
+        print('Newest preserved backup:', latest)
+        probe('Preserved backup (disposable copy)', scratch, latest)
+healthy = probe('Fresh database and reopen on the home filesystem (disposable)', parent) and healthy
+print('Original database files and backups were left in place.')
+sys.exit(0 if healthy else 1)
+CODEX_DESKTOP_DOCTOR
+}
+
+
 launch_ai_desktop_unlocked() (
   local app=$1
   shift
+  if [ "$app" = codex-desktop ] && [ "${1:-}" = --doctor ]; then
+    if [ "$#" != 1 ]; then fail 'Use desk codex-desktop --doctor without other arguments.'; return 2; fi
+    codex_desktop_doctor
+    return $?
+  fi
   if ! ai_desktop_ready "$app"; then
     if [ "${PREPARE_ON_LAUNCH:-1}" != 1 ]; then fail "Run desk install $app first."; return 1; fi
     prepare_ai_desktop_unlocked "$app" || return 1
