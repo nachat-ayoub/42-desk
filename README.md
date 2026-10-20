@@ -93,6 +93,20 @@ needed to run Android.
 
 ## Update an existing installation
 
+Update the installed 42-desk CLI without sudo:
+
+```bash
+desk update self              # Alias: desk self-update
+```
+
+This checks the version on this repository's `main` branch, validates the
+Bash script, and atomically replaces `~/.local/bin/desk` only when newer.
+It leaves your source checkout, selected programs, and installed applications
+alone. Downloads use verified HTTPS; a failed update keeps the installed CLI.
+`desk update` continues to update installed applications; `desk update codex`
+updates the Codex terminal application.
+
+
 From your repository checkout:
 
 ```bash
@@ -102,7 +116,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.12.0) and `desk st`.
+the installed command. Verify with `desk --version` (2.13.0) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -519,8 +533,28 @@ No GitHub token or GitHub CLI is needed.
 Packages are extracted once into `$GOINFRE/apps/codex-desktop` and
 `$GOINFRE/apps/claude-desktop`; launching does not require FUSE. Runtime temporary
 files, Chromium disk caches, and shader caches use the matching directories under
-`$GOINFRE/cache`. Existing desktop application profiles, credentials, and
-conversation history retain their usual locations. Close other copies of the
+`$GOINFRE/cache`.
+
+Codex Desktop also moves persistent data into `$GOINFRE/data/codex-desktop`:
+
+```text
+config/Codex, config/codex   Electron profiles (whichever the package uses)
+share/Codex, share/codex     XDG application data
+codex-home/                 Default ~/.codex, shared with Codex CLI
+```
+
+Close Codex Desktop and all Codex CLI sessions before the first installation
+or launch with this version. Existing directories are moved and replaced by
+compatibility symlinks, so sign-ins, settings, history, and CLI access are
+preserved while freeing home storage. Cross-filesystem moves need enough free
+space in goinfre. Migration refuses conflicting destinations and running Codex
+sessions; it never merges or overwrites existing data. An explicit `CODEX_HOME`
+and existing user symlinks are respected and left in place. New installs create
+the data folders directly in goinfre. `desk clean` keeps these persistent data
+folders and their links. **Goinfre is local and may be cleared by your school;
+back up your Codex data separately.**
+
+Claude Desktop keeps its usual profile location. Close other copies of the
 same desktop application before using desk's copy.
 
 The extracted Claude launcher uses the community package's native-package mode.
@@ -792,6 +826,37 @@ launch picker; it does not prepare or update programs. The direct commands
 `desk c`, `desk b`, `desk ai`, and `desk claude` retain their prepare-on-demand
 behavior for the requested program.
 
+## Download YouTube videos without sudo
+
+```bash
+desk yt 'https://www.youtube.com/watch?v=VIDEO_ID'
+# Alias: desk youtube URL
+```
+
+On first use, desk downloads the official portable Python `yt-dlp` release into
+`$GOINFRE/apps/yt-dlp`, verifies its published SHA-256 checksum, and checks that
+it runs. This requires `curl` and Python 3.10+; no pip, global package install,
+or sudo is used. Installed copies are reused on subsequent runs.
+
+The command lists available formats with their resolution, audio/video details,
+and format IDs. Enter the ID for the quality you want, or `q` to cancel.
+For scripts, pass the ID directly:
+
+```bash
+desk yt 'https://youtu.be/VIDEO_ID' 18
+# With an existing ffmpeg on PATH, separate video+audio can be merged:
+desk yt 'https://youtu.be/VIDEO_ID' '137+140'
+```
+
+IDs vary by video: use the displayed list. Choose a format containing both video
+and audio when ffmpeg is unavailable; the tool does not install system packages.
+High resolutions commonly require separate video/audio streams and ffmpeg.
+Videos go to `$GOINFRE/downloads/youtube`, and cache/temp files stay under
+`$GOINFRE/cache/yt-dlp`. Only the requested video is downloaded, even for playlist
+URLs. URLs with `&` or `?` should be quoted. Network, unavailable-format, and
+download failures are reported by yt-dlp. Site restrictions or authentication
+may prevent downloading a particular video.
+
 ## Background behavior
 
 The shell hook runs:
@@ -913,8 +978,10 @@ there independently of `TMPDIR`. An existing scratch directory is left intact
 to avoid disrupting live sessions. A user-supplied `CODEX_HOME` is respected.
 
 **Credentials, configuration, session history, and other persistent Codex data
-stay in `~/.codex` (or your existing `CODEX_HOME`).** They are not treated as
-cache or moved into potentially disposable campus storage. Existing logs are
+stay at the `~/.codex` path (or your existing `CODEX_HOME`).** CLI-only setups
+leave this directory in home storage. Installing Codex Desktop moves the default
+directory into goinfre with a compatibility symlink, as described above; back up
+that data because campus storage may be cleared. Existing logs are
 not migrated; new managed launches use the log directory above. You can supply
 an explicit Codex `-c log_dir=...` option to override the wrapper's default.
 
@@ -981,7 +1048,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.12.0
+42-desk 2.13.0
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI

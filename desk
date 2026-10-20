@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.12.0"
+VERSION="2.13.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -219,6 +219,8 @@ usage() {
   printf '  desk                 choose installed programs to open\n'
   printf '  desk open [APPS]     choose/open installed programs\n'
   printf '  desk install [APPS]  choose programs, save selection, and install\n'
+  printf '  desk update self     update the 42-desk CLI itself (no sudo)\n'
+  printf '  desk yt URL [FORMAT] download a video with a quality picker (no sudo)\n'
   printf '  desk update [APPS]   update installed programs when newer versions exist\n'
   printf '  desk c [ARGS]        open VS Code\n'
   printf '  desk b [ARGS]        open Brave\n'
@@ -3216,9 +3218,153 @@ AI_DESKTOP_INSTALLER
 )
 
 
+# Move persistent Codex data once; links keep existing CLI/desktop paths working.
+prepare_codex_desktop_storage() {
+  python3 - "$CONF_DIR" "$DATA_DIR" "$HOME/.codex" "${CODEX_HOME:-}" "$GOINFRE/data/codex-desktop" <<'PY'
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+config, data, default_home, override, root = sys.argv[1:]
+root = Path(root).resolve()
+pairs = [(Path(config) / name, root / 'config' / name) for name in ('Codex', 'codex')]
+pairs += [(Path(data) / name, root / 'share' / name) for name in ('Codex', 'codex')]
+if not override:
+    pairs.append((Path(default_home), root / 'codex-home'))
+try:
+    # Refuse conflicts before moving any directories. Custom symlinks and an
+    # explicit CODEX_HOME belong to the user and are left alone.
+    pending = [(source, target) for source, target in pairs if not source.is_symlink()]
+    for source, target in pending:
+        if source.exists() and (not source.is_dir() or (target.exists() or target.is_symlink())):
+            raise RuntimeError(f'Cannot migrate {source}: destination exists or source is not a directory. Move/merge it manually first.')
+    if any(source.exists() for source, _ in pending):
+        processes = subprocess.check_output(['ps', '-u', str(os.getuid()), '-o', 'comm='], text=True)
+        if any(name.strip().lower().startswith('codex') for name in processes.splitlines()):
+            raise RuntimeError('Close Codex CLI and Codex Desktop before migrating their data.')
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root.chmod(0o700)
+    for source, target in pending:
+        source.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.exists():
+            shutil.move(str(source), str(target))
+        else:
+            target.mkdir(parents=True, exist_ok=True, mode=0o700)
+        source.symlink_to(target, target_is_directory=True)
+except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+    sys.exit(f'Codex data migration failed: {error}')
+PY
+}
+
+
+update_desk_unlocked() (
+  [ "$#" = 0 ] || { fail 'Use: desk update self'; return 2; }
+  local tmp latest
+  tmp=$(mktemp -d "$GOINFRE/.desk-self-update.XXXXXX") || return 1
+  trap 'rm -rf -- "$tmp"' EXIT
+  curl -fsSL --proto '=https' --tlsv1.2 \
+    https://raw.githubusercontent.com/nachat-ayoub/42-desk/main/desk -o "$tmp/desk" || return 1
+  bash -n "$tmp/desk" || return 1
+  latest=$(python3 - "$tmp/desk" <<'PY'
+import re, sys
+from pathlib import Path
+match = re.search(r'^VERSION="([0-9]+\.[0-9]+\.[0-9]+)"$', Path(sys.argv[1]).read_text(), re.M)
+if not match:
+    sys.exit('Downloaded desk has no valid version')
+print(match[1])
+PY
+  ) || return 1
+  if ! version_is_newer "$latest" "$VERSION"; then
+    ok "42-desk $VERSION is up to date"
+    return 0
+  fi
+  mkdir -p "$BIN_DIR" || return 1
+  # Stage on the destination filesystem so replacement is atomic.
+  local staged
+  staged=$(mktemp "$BIN_DIR/.desk-update.XXXXXX") || return 1
+  if install -m 755 "$tmp/desk" "$staged" && mv -f -- "$staged" "$BIN_DIR/desk"; then
+    ok "Updated 42-desk $VERSION → $latest ($BIN_DIR/desk)"
+  else
+    rm -f -- "$staged"
+    return 1
+  fi
+)
+
+
+install_ytdlp_unlocked() (
+  local target="$APPS/yt-dlp/yt-dlp" tmp
+  [ -x "$target" ] && return 0
+  tmp=$(mktemp -d "$GOINFRE/.desk-ytdlp.XXXXXX") || return 1
+  trap 'rm -rf -- "$tmp"' EXIT
+  # Resolve a single release first so the artifact and checksum cannot race
+  # across two different "latest" releases. GitHub TLS remains verified.
+  curl -fsSL --proto '=https' --tlsv1.2 https://github.com/yt-dlp/yt-dlp/releases/latest -o "$tmp/latest.html" || return 1
+  local tag
+  tag=$(python3 - "$tmp/latest.html" <<'PY'
+import re, sys
+from pathlib import Path
+match = re.search(r'/releases/expanded_assets/([0-9.]+)[\"<>\s]', Path(sys.argv[1]).read_text())
+if not match:
+    sys.exit('Release page has no supported yt-dlp release')
+tag = match[1]
+if not re.fullmatch(r'[0-9]{4}\.[0-9]{2}\.[0-9]{2}(?:\.[0-9]+)?', tag):
+    sys.exit('Unexpected yt-dlp release tag')
+print(tag)
+PY
+  ) || return 1
+  local base="https://github.com/yt-dlp/yt-dlp/releases/download/$tag"
+  curl -fsSL --proto '=https' --tlsv1.2 "$base/yt-dlp" -o "$tmp/yt-dlp" || return 1
+  curl -fsSL --proto '=https' --tlsv1.2 "$base/SHA2-256SUMS" -o "$tmp/SHA2-256SUMS" || return 1
+  python3 - "$tmp" <<'PY'
+import hashlib, re, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+checksums = dict((name.lstrip('*'), digest) for digest, name in
+                 (line.split(maxsplit=1) for line in (root / 'SHA2-256SUMS').read_text().splitlines() if line.strip()))
+expected = checksums.get('yt-dlp', '')
+if not re.fullmatch('[0-9a-fA-F]{64}', expected) or hashlib.sha256((root / 'yt-dlp').read_bytes()).hexdigest() != expected.lower():
+    sys.exit('yt-dlp checksum verification failed')
+PY
+  [ "$?" = 0 ] || return 1
+  python3 "$tmp/yt-dlp" --version || return 1
+  mkdir -p "${target%/*}" || return 1
+  install -m 755 "$tmp/yt-dlp" "$target"
+)
+
+
+download_youtube() (
+  if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    fail 'Use: desk yt URL [FORMAT_ID] (choose from the listed formats; merging needs ffmpeg)'
+    return 2
+  fi
+  local url=$1 format=${2:-} tool="$APPS/yt-dlp/yt-dlp"
+  case "$url" in https://*|http://*) ;; *) fail 'Supply an http(s) video URL.'; return 2 ;; esac
+  with_lock_wait yt-dlp install_ytdlp_unlocked || return 1
+  local cache="$GOINFRE/cache/yt-dlp" output="$GOINFRE/downloads/youtube"
+  mkdir -p "$cache/tmp" "$output" || return 1
+  export TMPDIR="$cache/tmp" XDG_CACHE_HOME="$cache"
+  if [ -z "$format" ]; then
+    python3 "$tool" --ignore-config --no-playlist --cache-dir "$cache" --list-formats -- "$url" || return 1
+    if [ ! -t 0 ]; then fail 'Choose a format ID, then run: desk yt URL FORMAT_ID'; return 2; fi
+    printf '\nQuality/format ID (e.g. 18, or 137+140 with ffmpeg; q cancels): '
+    IFS= read -r format || return 1
+    [ "$format" != q ] || return 0
+    [ -n "$format" ] || { fail 'No format selected.'; return 2; }
+  fi
+  info "Saving video to $output"
+  python3 "$tool" --ignore-config --no-playlist --cache-dir "$cache" \
+    --paths "$output" --windows-filenames --output '%(title).180B [%(id)s].%(ext)s' \
+    --format "$format" -- "$url"
+)
+
+
 prepare_ai_desktop_unlocked() {
   install_ai_desktop "$1" || return 1
   ai_desktop_ready "$1" || return 1
+  if [ "$1" = codex-desktop ]; then prepare_codex_desktop_storage || return 1; fi
   write_ai_desktop_launcher "$1"
 }
 
@@ -3230,6 +3376,7 @@ launch_ai_desktop_unlocked() (
     if [ "${PREPARE_ON_LAUNCH:-1}" != 1 ]; then fail "Run desk install $app first."; return 1; fi
     prepare_ai_desktop_unlocked "$app" || return 1
   fi
+  if [ "$app" = codex-desktop ]; then prepare_codex_desktop_storage || return 1; fi
   local cache="$GOINFRE/cache/$app"
   local executable="$APPS/$app/current/AppRun"
   export APPDIR="$APPS/$app/current"
@@ -4807,8 +4954,21 @@ main() {
       open_programs "$@"
       ;;
 
+    self-update)
+      with_lock_wait core update_desk_unlocked "$@"
+      ;;
+
+    yt|youtube)
+      download_youtube "$@"
+      ;;
+
     update|up)
-      update_installed_programs "$@"
+      if [ "${1:-}" = self ]; then
+        shift
+        with_lock_wait core update_desk_unlocked "$@"
+      else
+        update_installed_programs "$@"
+      fi
       ;;
 
     _open)

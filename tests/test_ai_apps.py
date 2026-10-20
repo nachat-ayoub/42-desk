@@ -28,8 +28,13 @@ class AppFixtures(unittest.TestCase):
     def read_record(self, name):
         path = self.root / name
         deadline = time.monotonic() + 5
-        while not path.exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
+        while time.monotonic() < deadline:
+            try:
+                return json.loads(path.read_text())
+            except (FileNotFoundError, json.JSONDecodeError):
+                # Detached fixture processes create the file before writing its
+                # contents. Wait for the complete record, not just its inode.
+                time.sleep(0.02)
         return json.loads(path.read_text())
 
 
@@ -142,6 +147,59 @@ PY
         self.assertEqual((self.state / 'programs').read_text(), 'codex-desktop\nclaude-desktop\n')
         self.assertFalse((self.storage / 'apps/hermes').exists())
 
+    def test_codex_desktop_migrates_profile_and_shared_data_and_reuses_links(self):
+        self.write_executable(self.bin / 'ps', '#!/bin/sh\necho bash\n')
+        profile = self.home / '.config/Codex'
+        profile.mkdir(parents=True)
+        (profile / 'history').write_text('desktop history')
+        shared = self.home / '.codex'
+        shared.mkdir()
+        (shared / 'auth.json').write_text('fixture account')
+        self.install('codex-desktop')
+        root = self.storage / 'data/codex-desktop'
+        self.assertTrue(profile.is_symlink())
+        self.assertEqual((root / 'config/Codex/history').read_text(), 'desktop history')
+        self.assertTrue(shared.is_symlink())
+        self.assertEqual((root / 'codex-home/auth.json').read_text(), 'fixture account')
+        self.run_desk('codex-desktop')
+        record = self.read_record('codex-desktop-launch.json')
+        self.assertEqual(record['env']['XDG_CACHE_HOME'], str(self.storage / 'cache/codex-desktop/xdg'))
+        self.assertNotIn('--no-sandbox', record['args'])
+        self.source('setup_runtime; clean_reset_unlocked')
+        self.assertEqual((shared / 'auth.json').read_text(), 'fixture account')
+        self.assertEqual((profile / 'history').read_text(), 'desktop history')
+
+    def test_codex_data_migration_refuses_running_sessions_and_conflicts(self):
+        self.write_executable(self.bin / 'ps', '#!/bin/sh\necho codex\n')
+        profile = self.home / '.config/Codex'
+        profile.mkdir(parents=True)
+        (profile / 'history').write_text('preserve')
+        result = self.source('setup_runtime; prepare_codex_desktop_storage', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Close Codex', result.stderr)
+        self.assertFalse(profile.is_symlink())
+        self.assertEqual((profile / 'history').read_text(), 'preserve')
+        self.write_executable(self.bin / 'ps', '#!/bin/sh\necho bash\n')
+        target = self.storage / 'data/codex-desktop/config/Codex'
+        target.mkdir(parents=True)
+        (target / 'history').write_text('other history')
+        result = self.source('setup_runtime; prepare_codex_desktop_storage', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((profile / 'history').read_text(), 'preserve')
+        self.assertEqual((target / 'history').read_text(), 'other history')
+
+    def test_codex_data_migration_respects_custom_codex_home_and_symlinks(self):
+        custom = self.root / 'custom codex data'
+        custom.mkdir()
+        (custom / 'auth.json').write_text('custom account')
+        self.env['CODEX_HOME'] = str(custom)
+        shared = self.home / '.codex'
+        shared.symlink_to(custom, target_is_directory=True)
+        self.install('codex-desktop')
+        self.assertEqual(shared.resolve(), custom)
+        self.assertFalse((self.storage / 'data/codex-desktop/codex-home').exists())
+        self.assertEqual((custom / 'auth.json').read_text(), 'custom account')
+
     def test_launch_uses_goinfre_cache_and_preserves_normal_profile_and_arguments(self):
         self.install('claude-desktop')
         profile = self.home / '.config/Claude/history'
@@ -223,7 +281,7 @@ PY
         profiles = [self.home / '.config/Codex/account', self.home / '.config/Claude/account',
                     self.home / '.openmausbot/config.json', self.home / '.config/openmausbot/credentials.bin']
         for path in profiles:
-            path.parent.mkdir(parents=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('keep user account')
         self.source('setup_runtime; clean_reset_unlocked')
         for app in self.repos:

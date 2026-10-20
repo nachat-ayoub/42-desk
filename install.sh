@@ -87,11 +87,11 @@ printf \
 
 
 printf '\n'
-printf 'Choose VS Code, Brave, Codex CLI, Claude Code, Android 11 Google Play, Flutter, or any combination.\n'
+printf 'Choose VS Code, Brave, Codex CLI/Desktop, Claude Code/Desktop, Android, Flutter, Hermes, OpenMausBot, or any combination.\n'
 printf 'New installations show a checkbox picker in your next terminal.\n\n'
 printf 'Open the picker now: ~/.local/bin/desk install\n'
 printf 'Without prompts: ~/.local/bin/desk install codex claude\n'
-printf 'Install all six tools: ~/.local/bin/desk install all\n'
+printf 'Install all tools: ~/.local/bin/desk install all\n'
 printf 'After installation, choose what to open: ~/.local/bin/desk\n'
 printf 'Update installed programs: ~/.local/bin/desk update\n\n'
 
