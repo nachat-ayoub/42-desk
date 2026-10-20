@@ -116,7 +116,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.13.0) and `desk st`.
+the installed command. Verify with `desk --version` (2.14.0) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -838,24 +838,41 @@ On first use, desk downloads the official portable Python `yt-dlp` release into
 it runs. This requires `curl` and Python 3.10+; no pip, global package install,
 or sudo is used. Installed copies are reused on subsequent runs.
 
-The command lists available formats with their resolution, audio/video details,
-and format IDs. Enter the ID for the quality you want, or `q` to cancel.
-For scripts, pass the ID directly:
+The command shows a short menu with one entry per available resolution:
 
-```bash
-desk yt 'https://youtu.be/VIDEO_ID' 18
-# With an existing ffmpeg on PATH, separate video+audio can be merged:
-desk yt 'https://youtu.be/VIDEO_ID' '137+140'
+```text
+Example video
+  1) 480p
+  2) 720p (recommended)
+  3) 1080p
+  q) Cancel
+
+Choose quality [720p]:
 ```
 
-IDs vary by video: use the displayed list. Choose a format containing both video
-and audio when ffmpeg is unavailable; the tool does not install system packages.
-High resolutions commonly require separate video/audio streams and ffmpeg.
-Videos go to `$GOINFRE/downloads/youtube`, and cache/temp files stay under
-`$GOINFRE/cache/yt-dlp`. Only the requested video is downloaded, even for playlist
-URLs. URLs with `&` or `?` should be quoted. Network, unavailable-format, and
-download failures are reported by yt-dlp. Site restrictions or authentication
-may prevent downloading a particular video.
+Choose a menu number, type a resolution such as `1080p`, or press Enter for
+720p when available. Only qualities available for that video are shown. Type
+`q` to cancel. You can also skip the menu:
+
+```bash
+desk yt 'https://youtu.be/VIDEO_ID' 720p
+desk yt 'https://youtu.be/VIDEO_ID' 1080p
+desk yt 'https://youtu.be/VIDEO_ID' best
+```
+
+Video and audio are selected and combined automatically at the chosen resolution;
+there are no stream IDs to enter. When merging is needed, desk uses an existing
+ffmpeg or downloads a portable copy into goinfre, without sudo or pip. Automatic
+ffmpeg setup supports Linux x86-64 and ARM64 and verifies the PyPI wheel's SHA-256
+before running its bundled executable. Its licence is retained in the saved wheel.
+Merged video is saved as MKV to support the source codecs without re-encoding;
+ready-made videos keep their original container.
+
+Videos go to `$GOINFRE/downloads/youtube`; tools, cache, and temporary files also
+stay in goinfre. Only the requested video is downloaded, even for playlist URLs.
+Quote URLs containing `&` or `?`. Routine extraction details are hidden; if a
+video cannot be read, the command gives a short error and the path to its log.
+Site restrictions or authentication may prevent downloading a particular video.
 
 ## Background behavior
 
@@ -1048,7 +1065,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.13.0
+42-desk 2.14.0
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI

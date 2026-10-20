@@ -2,6 +2,9 @@
 
 import hashlib
 import json
+import subprocess
+import io
+import zipfile
 from pathlib import Path
 
 from test_ai_apps import AppFixtures
@@ -19,7 +22,7 @@ with (root / 'requests').open('a') as stream:
     stream.write(url + '\\n')
 if (root / 'offline').exists():
     sys.exit(22)
-name = 'new-desk' if url.endswith('/main/desk') else ('latest.html' if url.endswith('/releases/latest') else url.rsplit('/', 1)[-1])
+name = 'new-desk' if url.endswith('/main/desk') else ('ffmpeg.json' if url.endswith('/imageio-ffmpeg/json') else ('latest.html' if url.endswith('/releases/latest') else url.rsplit('/', 1)[-1]))
 pathlib.Path(args[args.index('-o') + 1]).write_bytes((root / name).read_bytes())
 ''')
         self.candidate = self.root / 'new-desk'
@@ -32,13 +35,36 @@ pathlib.Path(args[args.index('-o') + 1]).write_bytes((root / name).read_bytes())
 root = pathlib.Path(os.environ['DESK_FIXTURE'])
 if '--version' in sys.argv:
     print('2026.10.14')
-elif '--list-formats' in sys.argv:
-    print('18 mp4 360p video+audio')
-    print('22 mp4 720p video+audio')
+elif '--dump-single-json' in sys.argv:
+    (root / 'metadata-args.json').write_text(json.dumps(sys.argv[1:]))
+    if (root / 'metadata-fails').exists():
+        print('fixture extraction failure', file=sys.stderr)
+        sys.exit(4)
+    print((root / 'metadata.json').read_text())
 else:
     (root / 'download.json').write_text(json.dumps({'args': sys.argv[1:], 'tmp': os.environ['TMPDIR']}))
     sys.exit(7 if (root / 'download-fails').exists() else 0)
 ''')
+        formats = [
+            {'height': 360, 'vcodec': 'h264', 'acodec': 'aac'},
+            {'height': 480, 'vcodec': 'h264', 'acodec': 'none'},
+            {'height': 720, 'vcodec': 'h264', 'acodec': 'aac'},
+            {'height': 720, 'vcodec': 'vp9', 'acodec': 'none'},
+            {'height': 1080, 'vcodec': 'vp9', 'acodec': 'none'},
+            {'height': 27, 'vcodec': 'none', 'acodec': 'none'},
+            {'height': None, 'vcodec': 'none', 'acodec': 'aac'},
+        ]
+        (self.root / 'metadata.json').write_text(json.dumps({'title': 'Example video', 'formats': formats}))
+        wheel = io.BytesIO()
+        with zipfile.ZipFile(wheel, 'w') as archive:
+            archive.writestr('imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2', '#!/bin/sh\nexit 0\n')
+        (self.root / 'ffmpeg.whl').write_bytes(wheel.getvalue())
+        self.ffmpeg_metadata = {'urls': [{
+            'filename': 'imageio_ffmpeg-0.6.0-py3-none-manylinux2014_x86_64.whl',
+            'url': 'https://files.pythonhosted.org/ffmpeg.whl',
+            'digests': {'sha256': hashlib.sha256(wheel.getvalue()).hexdigest()},
+        }]}
+        (self.root / 'ffmpeg.json').write_text(json.dumps(self.ffmpeg_metadata))
         (self.root / 'latest.html').write_text('<include-fragment src="/yt-dlp/yt-dlp/releases/expanded_assets/2026.10.14">')
         self.checksums = self.root / 'SHA2-256SUMS'
         self.checksums.write_text(hashlib.sha256(self.video.read_bytes()).hexdigest() + '  yt-dlp\n')
@@ -68,40 +94,101 @@ else:
 
     def test_video_download_verifies_tool_routes_storage_and_passes_arguments(self):
         url = 'https://www.youtube.com/watch?v=example&list=ignored'
-        self.run_desk('yt', url, '22')
+        self.run_desk('yt', url, '720p')
         record = json.loads((self.root / 'download.json').read_text())
         self.assertEqual(record['args'][-2:], ['--', url])
         self.assertIn('--ignore-config', record['args'])
         self.assertIn('--no-playlist', record['args'])
-        self.assertEqual(record['args'][record['args'].index('--format') + 1], '22')
+        self.assertEqual(record['args'][record['args'].index('--format') + 1], 'b[height=720]/bv[height=720]+ba')
         self.assertEqual(record['args'][record['args'].index('--paths') + 1], str(self.storage / 'downloads/youtube'))
         self.assertEqual(record['tmp'], str(self.storage / 'cache/yt-dlp/tmp'))
         (self.root / 'offline').touch()
-        self.run_desk('yt', url, '18')  # Installed tool is reused, no bootstrap request.
+        self.run_desk('yt', url, '360p')  # Installed tool is reused, no bootstrap request.
 
     def test_video_checksum_failure_never_executes_or_installs_download(self):
         self.checksums.write_text('0' * 64 + '  yt-dlp\n')
-        result = self.run_desk('yt', 'https://youtu.be/example', '18', check=False)
+        result = self.run_desk('yt', 'https://youtu.be/example', '360p', check=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('checksum', result.stderr)
         self.assertFalse((self.storage / 'apps/yt-dlp/yt-dlp').exists())
         self.assertFalse((self.root / 'download.json').exists())
 
     def test_video_quality_prompt_downloads_selected_format_and_can_cancel(self):
-        code, output = self.interact(['yt', 'https://youtu.be/example'], [b'22\n'], prompt=b'Quality/format ID')
+        code, output = self.interact(['yt', 'https://youtu.be/example'], [b'3\n'], prompt=b'Choose quality')
         self.assertEqual(code, 0, output.decode())
         self.assertIn(b'720p', output)
         record = json.loads((self.root / 'download.json').read_text())
-        self.assertEqual(record['args'][record['args'].index('--format') + 1], '22')
+        self.assertEqual(record['args'][record['args'].index('--format') + 1], 'b[height=720]/bv[height=720]+ba')
         (self.root / 'download.json').unlink()
-        code, output = self.interact(['yt', 'https://youtu.be/example'], [b'q\n'], prompt=b'Quality/format ID')
+        code, output = self.interact(['yt', 'https://youtu.be/example'], [b'q\n'], prompt=b'Choose quality')
         self.assertEqual(code, 0, output.decode())
         self.assertFalse((self.root / 'download.json').exists())
 
-    def test_video_noninteractive_requires_format_and_propagates_download_failure(self):
+    def test_video_noninteractive_requires_quality_and_propagates_download_failure(self):
         result = self.run_desk('yt', 'https://youtu.be/example', check=False)
         self.assertEqual(result.returncode, 2)
         self.assertIn('360p', result.stdout)
         self.assertFalse((self.root / 'download.json').exists())
         (self.root / 'download-fails').touch()
-        self.assertEqual(self.run_desk('yt', 'https://youtu.be/example', '18', check=False).returncode, 7)
+        self.assertEqual(self.run_desk('yt', 'https://youtu.be/example', '360p', check=False).returncode, 7)
+
+    def test_quality_menu_has_unique_resolutions_without_stream_details(self):
+        result = self.run_desk('yt', 'https://youtu.be/example', check=False)
+        self.assertEqual(result.returncode, 2)
+        for quality in ('360p', '480p', '720p', '1080p'):
+            self.assertEqual(result.stdout.count(quality), 1)
+        self.assertNotIn('27p', result.stdout)
+        self.assertNotIn('video only', result.stdout)
+        self.assertNotIn('FORMAT_ID', result.stdout)
+        self.assertIn('Example video', result.stdout)
+        self.assertEqual(json.loads((self.root / 'metadata-args.json').read_text())[-2:], ['--', 'https://youtu.be/example'])
+
+    def test_default_quality_and_invalid_interactive_choice(self):
+        code, output = self.interact(['yt', 'https://youtu.be/example'], [b'wrong\n\n'], prompt=b'Choose quality')
+        self.assertEqual(code, 0, output.decode())
+        self.assertIn(b'Choose an available quality', output)
+        record = json.loads((self.root / 'download.json').read_text())
+        self.assertIn('b[height=720]/bv[height=720]+ba', record['args'])
+
+    def install_portable_ffmpeg(self, tool):
+        # Exercise the embedded installer with PATH discovery mocked so a
+        # system ffmpeg cannot bypass the download/integrity checks.
+        script = Path(self.env['DESK_SCRIPT']).read_text().split("3<<'VIDEO_DOWNLOAD'\n", 1)[1].split('\nVIDEO_DOWNLOAD', 1)[0]
+        script = script.split('\ntry:\n    sys.exit(main())', 1)[0]
+        return subprocess.run(['python3', '-c', script + "\nshutil.which = lambda name: None\nprint(portable_ffmpeg(Path(sys.argv[1])))", str(tool)], env=self.env, capture_output=True, text=True)
+
+    def test_ffmpeg_checksum_failure_preserves_existing_files(self):
+        self.source('setup_runtime; install_ytdlp_unlocked')
+        tool = self.storage / 'apps/yt-dlp/yt-dlp'
+        self.ffmpeg_metadata['urls'][0]['digests']['sha256'] = '0' * 64
+        (self.root / 'ffmpeg.json').write_text(json.dumps(self.ffmpeg_metadata))
+        result = self.install_portable_ffmpeg(tool)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('checksum verification failed', result.stderr)
+        self.assertFalse((tool.parent / 'ffmpeg').exists())
+        self.assertFalse((tool.parent / 'ffmpeg.whl').exists())
+
+    def test_1080p_installs_verified_portable_ffmpeg_and_merges_audio(self):
+        # Do not depend on the host already having ffmpeg installed.
+        self.source('setup_runtime; install_ytdlp_unlocked')
+        tool = self.storage / 'apps/yt-dlp/yt-dlp'
+        result = self.install_portable_ffmpeg(tool)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((tool.parent / 'ffmpeg').is_file())
+        self.assertTrue((tool.parent / 'ffmpeg.whl').is_file())
+        self.run_desk('yt', 'https://youtu.be/example', '1080p')
+        record = json.loads((self.root / 'download.json').read_text())
+        self.assertIn('--ffmpeg-location', record['args'])
+        self.assertIn('b[height=1080]/bv[height=1080]+ba', record['args'])
+
+    def test_unavailable_quality_and_metadata_failure_do_not_download(self):
+        result = self.run_desk('yt', 'https://youtu.be/example', '2160p', check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('available quality', result.stderr)
+        self.assertFalse((self.root / 'download.json').exists())
+        (self.root / 'metadata-fails').touch()
+        result = self.run_desk('yt', 'https://youtu.be/example', '720p', check=False)
+        self.assertEqual(result.returncode, 4)
+        self.assertIn('Could not read this video', result.stderr)
+        self.assertNotIn('fixture extraction failure', result.stderr)
+        self.assertIn('fixture extraction failure', (self.storage / 'cache/yt-dlp/last-check.log').read_text())
