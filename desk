@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.14.0"
+VERSION="2.14.1"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -3455,16 +3455,20 @@ def main():
             return 2
     # Prefer a complete video at the chosen resolution; otherwise merge the
     # best video and audio automatically. Never silently drop the resolution.
-    combined = any(int(item['height']) == height and item.get('acodec') not in (None, 'none') for item in formats)
-    ffmpeg = [] if combined else ['--ffmpeg-location', portable_ffmpeg(tool)]
-    print(f'\nDownloading {height}p with audio…\nSaving to {output}', flush=True)
+    # MP4 conversion also needs ffmpeg for single-file WebM downloads.
+    ffmpeg = ['--ffmpeg-location', portable_ffmpeg(tool)]
+    print(f'\nDownloading {height}p with audio as MP4…\nSaving to {output}\nConversion may take a while for large videos.', flush=True)
     command = base + ['--quiet', '--progress', '--no-warnings', '--paths', output,
                       '--windows-filenames', '--output', '%(title).180B [%(id)s].%(ext)s',
                       '--format', f'b[height={height}]/bv[height={height}]+ba',
-                      '--merge-output-format', 'mkv'] + ffmpeg + ['--', url]
+                      # Merge into a codec-neutral intermediate, then convert non-MP4 files
+                      # to H.264/AAC. Already-MP4 downloads are kept as they are.
+                      '--merge-output-format', 'mkv', '--recode-video', 'mp4',
+                      '--postprocessor-args',
+                      'VideoConvertor+ffmpeg_o:-c:v libx264 -preset fast -crf 18 -c:a aac -b:a 192k -movflags +faststart'] + ffmpeg + ['--', url]
     result = subprocess.run(command)
     if result.returncode == 0:
-        print(f'\nDone! Video saved to {output}', flush=True)
+        print(f'\nDone! MP4 video saved to {output}', flush=True)
     return result.returncode
 
 

@@ -51,6 +51,7 @@ else:
             {'height': 720, 'vcodec': 'h264', 'acodec': 'aac'},
             {'height': 720, 'vcodec': 'vp9', 'acodec': 'none'},
             {'height': 1080, 'vcodec': 'vp9', 'acodec': 'none'},
+            {'height': 2160, 'vcodec': 'vp9', 'acodec': 'none'},
             {'height': 27, 'vcodec': 'none', 'acodec': 'none'},
             {'height': None, 'vcodec': 'none', 'acodec': 'aac'},
         ]
@@ -182,7 +183,7 @@ else:
         self.assertIn('b[height=1080]/bv[height=1080]+ba', record['args'])
 
     def test_unavailable_quality_and_metadata_failure_do_not_download(self):
-        result = self.run_desk('yt', 'https://youtu.be/example', '2160p', check=False)
+        result = self.run_desk('yt', 'https://youtu.be/example', '4320p', check=False)
         self.assertEqual(result.returncode, 2)
         self.assertIn('available quality', result.stderr)
         self.assertFalse((self.root / 'download.json').exists())
@@ -192,3 +193,17 @@ else:
         self.assertIn('Could not read this video', result.stderr)
         self.assertNotIn('fixture extraction failure', result.stderr)
         self.assertIn('fixture extraction failure', (self.storage / 'cache/yt-dlp/last-check.log').read_text())
+
+    def test_all_downloads_finish_as_mp4_including_2160p_and_combined_streams(self):
+        for quality in ('720p', '2160p'):
+            with self.subTest(quality=quality):
+                self.run_desk('yt', 'https://youtu.be/example', quality)
+                args = json.loads((self.root / 'download.json').read_text())['args']
+                self.assertEqual(args[args.index('--recode-video') + 1], 'mp4')
+                self.assertEqual(args[args.index('--merge-output-format') + 1], 'mkv')
+                self.assertIn('--ffmpeg-location', args)
+                options = args[args.index('--postprocessor-args') + 1]
+                self.assertIn('VideoConvertor+ffmpeg_o:', options)
+                self.assertIn('-c:v libx264', options)
+                self.assertIn('-c:a aac', options)
+                self.assertNotIn('--keep-video', args)
