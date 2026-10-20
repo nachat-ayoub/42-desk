@@ -116,7 +116,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.14.1) and `desk st`.
+the installed command. Verify with `desk --version` (2.14.2) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -865,7 +865,8 @@ there are no stream IDs to enter. When merging is needed, desk uses an existing
 ffmpeg or downloads a portable copy into goinfre, without sudo or pip. Automatic
 ffmpeg setup supports Linux x86-64 and ARM64 and verifies the PyPI wheel's SHA-256
 before running its bundled executable. Its licence is retained in the saved wheel.
-Every completed download is saved as MP4, including 2160p/4K. Non-MP4 sources
+Every completed download is saved as MP4, including 2160p/4K. Filenames include
+the selected quality, for example `Video title [video-id] [2160p].mp4`. Non-MP4 sources
 are converted to H.264 video and AAC audio at the chosen resolution; existing
 MP4 sources are kept as they are. Conversion happens locally in goinfre and
 can take time for large videos. Temporary merged files are removed after
@@ -1068,7 +1069,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.14.1
+42-desk 2.14.2
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI

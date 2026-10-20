@@ -199,6 +199,8 @@ else:
             with self.subTest(quality=quality):
                 self.run_desk('yt', 'https://youtu.be/example', quality)
                 args = json.loads((self.root / 'download.json').read_text())['args']
+                self.assertEqual(args[args.index('--output') + 1],
+                                 f'%(title).180B [%(id)s] [{quality}].%(ext)s')
                 self.assertEqual(args[args.index('--recode-video') + 1], 'mp4')
                 self.assertEqual(args[args.index('--merge-output-format') + 1], 'mkv')
                 self.assertIn('--ffmpeg-location', args)

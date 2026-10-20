@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.14.1"
+VERSION="2.14.2"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -3459,7 +3459,7 @@ def main():
     ffmpeg = ['--ffmpeg-location', portable_ffmpeg(tool)]
     print(f'\nDownloading {height}p with audio as MP4…\nSaving to {output}\nConversion may take a while for large videos.', flush=True)
     command = base + ['--quiet', '--progress', '--no-warnings', '--paths', output,
-                      '--windows-filenames', '--output', '%(title).180B [%(id)s].%(ext)s',
+                      '--windows-filenames', '--output', f'%(title).180B [%(id)s] [{height}p].%(ext)s',
                       '--format', f'b[height={height}]/bv[height={height}]+ba',
                       # Merge into a codec-neutral intermediate, then convert non-MP4 files
                       # to H.264/AAC. Already-MP4 downloads are kept as they are.
