@@ -116,7 +116,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.14.3) and `desk st`.
+the installed command. Verify with `desk --version` (2.14.4) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -603,6 +603,31 @@ and conversations stay in place; no conversation rows are printed.
 Send the report when asking for help. A recovery popup alone does not identify
 the cause, and moving the profile or repeatedly resetting it can obscure the problem.
 
+If the report contains `ERR_DLOPEN_FAILED` and `GLIBC_2.38` or `GLIBCXX_... not found`,
+the packaged native SQLite module needs newer system libraries. With Codex fully
+closed, repair just that module:
+
+```bash
+./desk codex-desktop --repair-runtime
+./desk codex-desktop --doctor
+```
+
+Desk selects the upstream [better-sqlite3](https://github.com/WiseLibs/better-sqlite3)
+Linux prebuild matching the installed SQLite package version, Electron ABI, and
+architecture. It verifies the GitHub SHA-256 digest and tests two in-memory
+databases before atomically replacing the module. The distributed binary is kept
+beside it as `better_sqlite3.node.desk-original`, with a repair receipt. Repair
+does not open user databases, restore backups, migrate profiles, or launch the GUI.
+For the inspected SQLite 12.9.0 / Electron ABI 143 x64 build, the upstream binary
+requires GLIBC 2.34 and GLIBCXX 3.4.29, compatible with Ubuntu 22.04's standard libraries.
+No system libc upgrade or administrator access is needed. If no compatible
+verified build exists, desk keeps the original module and reports the failure.
+
+Installation, update checks, and launches perform the same native check and
+repair when needed. Healthy installations need no additional downloads. Run
+`./desk install codex-desktop` to refresh the installed `desk` command and launchers
+after updating a checkout.
+
 ### OpenMausBot
 
 ```bash
@@ -790,6 +815,7 @@ desk hermes-desktop open the official Hermes Desktop app
 desk openmausbot     open OpenMausBot desktop
 desk codex-desktop   open the community Linux Codex desktop app
 desk codex-desktop --doctor diagnose desktop/database startup
+desk codex-desktop --repair-runtime fix incompatible native SQLite
 desk claude-desktop  open the community Linux Claude desktop app
 desk android [ARGS]  open the managed Android emulator
 desk flutter [ARGS]  run Flutter (includes Dart)
@@ -1100,7 +1126,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.14.3
+42-desk 2.14.4
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI

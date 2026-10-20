@@ -100,6 +100,13 @@ if APP_NAME == 'openmausbot':
     (root / 'resources').mkdir()
     (root / 'resources/app.asar').write_text('packaged app')
     target.write_text("""#!/bin/sh\nexec "$(dirname "$0")/openmausbot" --no-sandbox "$@"\n""")
+if APP_NAME == 'codex-desktop':
+    binary = root / 'codex-desktop.bin'
+    binary.write_text('#!/bin/sh\\necho ' + repr('{"ok":true,"abi":"143","arch":"x64"}') + '\\n')
+    binary.chmod(0o755)
+    native = root / 'resources/app/node_modules/better-sqlite3/build/Release/better_sqlite3.node'
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b'compatible fixture module')
 PY
 '''.replace('LAUNCHER', repr(launcher)).replace('APP_NAME', repr(app))
         if fail_extract:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.14.3"
+VERSION="2.14.4"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -231,6 +231,7 @@ usage() {
   printf '  desk openmausbot     open OpenMausBot desktop\n'
   printf '  desk codex-desktop   open the community Linux Codex desktop app\n'
   printf '  desk codex-desktop --doctor  diagnose desktop/database startup\n'
+  printf '  desk codex-desktop --repair-runtime  fix incompatible native SQLite\n'
   printf '  desk claude-desktop  open the community Linux Claude desktop app\n'
   printf '  desk android [ARGS] open Android 11 Google Play (Pixel 9 display)\n'
   printf '  desk flutter [ARGS] run Flutter (includes Dart)\n'
@@ -3043,6 +3044,7 @@ install_ai_desktop() (
   fi
   if ai_desktop_ready "$app" && [ "${UPDATE_ONLY:-0}" != 1 ]; then
     ok "$(label "$app") is ready; use desk update $app to check for updates."
+    if [ "$app" = codex-desktop ]; then prepare_codex_desktop_runtime || return 1; fi
     return 0
   fi
   if ai_desktop_running "$app"; then
@@ -3216,7 +3218,165 @@ try:
 except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
     sys.exit('Desktop setup failed: ' + str(error))
 AI_DESKTOP_INSTALLER
+  local result=$?
+  [ "$result" = 0 ] || return "$result"
+  if [ "$app" = codex-desktop ]; then prepare_codex_desktop_runtime || return 1; fi
 )
+
+
+# Check native code without opening user databases. Some community AppImages
+# build SQLite on a newer libc than Electron itself requires.
+prepare_codex_desktop_runtime() {
+  local running=0
+  if ai_desktop_running codex-desktop; then running=1; fi
+  python3 - "$APPS/codex-desktop/current" "$GOINFRE/cache/codex-desktop" "$running" <<'CODEX_RUNTIME'
+import hashlib
+from html.parser import HTMLParser
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+current, cache, running = Path(sys.argv[1]).resolve(), Path(sys.argv[2]), sys.argv[3] == '1'
+binary = current / 'codex-desktop.bin'
+package = current / 'resources/app/node_modules/better-sqlite3'
+native = package / 'build/Release/better_sqlite3.node'
+script = r'''
+const result={abi:process.versions.modules,arch:process.arch};
+try {
+  const Database=require(process.argv[1]);
+  for(let i=0;i<2;i++) {
+    const db=new Database(':memory:',process.argv[2]?{nativeBinding:process.argv[2]}:{});
+    try {
+      db.exec('CREATE TABLE probe (value INTEGER); INSERT INTO probe VALUES (42)');
+      if(db.prepare('SELECT value FROM probe').get().value!==42 ||
+         db.pragma('quick_check',{simple:true})!=='ok') throw Error('SQLite validation failed');
+    } finally { db.close(); }
+  }
+  result.ok=true;
+} catch(error) { result.ok=false; result.code=error.code; result.message=error.message; }
+console.log(JSON.stringify(result));
+process.exitCode=result.ok?0:1;
+'''
+
+def probe(candidate=None):
+    command = [str(binary), '-e', script, str(package)]
+    if candidate is not None:
+        command.append(str(candidate))
+    result = subprocess.run(command, env=dict(os.environ, ELECTRON_RUN_AS_NODE='1'),
+                            capture_output=True, text=True, timeout=25)
+    try:
+        report = json.loads(result.stdout)
+    except ValueError:
+        raise RuntimeError('Cannot run the packaged Electron runtime: ' +
+                           (result.stderr or result.stdout).strip()[:1200])
+    if result.returncode != 0 and report.get('ok'):
+        raise RuntimeError('Native probe exited unexpectedly')
+    return report
+
+def fetch(url, destination):
+    subprocess.run(['curl', '-fL', '--proto', '=https', '--proto-redir', '=https',
+                    '--tlsv1.2', '--retry', '2', '--connect-timeout', '15',
+                    '--max-time', '180', url, '-o', str(destination)], check=True)
+
+class Assets(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.assets, self.row = [], None
+    def handle_starttag(self, tag, attributes):
+        values = dict(attributes)
+        if tag == 'li':
+            self.row = {}
+        elif self.row is not None:
+            if tag == 'a' and '/releases/download/' in values.get('href', ''):
+                self.row['url'] = values['href']
+            if tag == 'clipboard-copy' and re.fullmatch(r'sha256:[a-fA-F0-9]{64}', values.get('value', '')):
+                self.row['sha256'] = values['value'][7:].lower()
+    def handle_endtag(self, tag):
+        if tag == 'li' and self.row is not None:
+            if 'url' in self.row and 'sha256' in self.row:
+                self.assets.append(self.row)
+            self.row = None
+
+def main():
+    if not binary.is_file() or not native.is_file():
+        raise RuntimeError('Unsupported Codex Desktop package layout; reinstall with desk install codex-desktop.')
+    report = probe()
+    if report.get('ok'):
+        return
+    message = report.get('message', '')
+    if report.get('code') != 'ERR_DLOPEN_FAILED' or not re.search(r'GLIBC(?:XX)?_[0-9.]+.*not found', message):
+        raise RuntimeError('Native SQLite check failed: ' + message)
+    if running:
+        raise RuntimeError('Quit Codex Desktop, including its tray icon, before repairing its native runtime.')
+    version = json.loads((package / 'package.json').read_text())['version']
+    abi, arch = report.get('abi', ''), report.get('arch', '')
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version) or not re.fullmatch(r'[0-9]+', abi) or arch not in ('x64', 'arm64'):
+        raise RuntimeError('Unsupported native SQLite version, Electron ABI, or architecture')
+    tag = 'v' + version
+    name = f'better-sqlite3-{tag}-electron-v{abi}-linux-{arch}.tar.gz'
+    root = 'https://github.com/WiseLibs/better-sqlite3'
+    expected = f'/WiseLibs/better-sqlite3/releases/download/{tag}/{name}'
+    cache.mkdir(parents=True, exist_ok=True)
+    print('Preparing compatible upstream SQLite ' + version + ' for Electron ABI ' + abi, flush=True)
+    with tempfile.TemporaryDirectory(prefix='runtime-', dir=cache) as temporary:
+        stage = Path(temporary)
+        listing, archive = stage / 'assets.html', stage / 'sqlite.tar.gz'
+        fetch(root + '/releases/expanded_assets/' + tag, listing)
+        parser = Assets()
+        parser.feed(listing.read_text())
+        choices = [asset for asset in parser.assets if asset['url'] in (expected, 'https://github.com' + expected)]
+        if len(choices) != 1:
+            raise RuntimeError('No unique matching upstream SQLite build with a GitHub SHA-256 digest')
+        asset = choices[0]
+        fetch('https://github.com' + expected, archive)
+        if hashlib.sha256(archive.read_bytes()).hexdigest() != asset['sha256']:
+            raise RuntimeError('SQLite checksum mismatch; original module kept')
+        candidate = stage / 'better_sqlite3.node'
+        with tarfile.open(archive, 'r:gz') as contents:
+            matches = [entry for entry in contents.getmembers() if entry.name == 'build/Release/better_sqlite3.node']
+            if len(matches) != 1 or not matches[0].isfile() or matches[0].size > 64 * 1024**2:
+                raise RuntimeError('Unsupported SQLite archive; original module kept')
+            with contents.extractfile(matches[0]) as source, candidate.open('wb') as target:
+                shutil.copyfileobj(source, target)
+        validation = probe(candidate)
+        if not validation.get('ok'):
+            raise RuntimeError('Upstream SQLite is incompatible too; original module kept: ' + validation.get('message', 'unknown error'))
+        # Nothing above opens, migrates, or moves any user database. Preserve
+        # the distributed native binary and replace only the validated module.
+        backup = native.with_name(native.name + '.desk-original')
+        if not backup.exists():
+            shutil.copy2(native, backup)
+        receipt = native.with_name(native.name + '.desk-runtime.json')
+        metadata = {'version': version, 'abi': abi, 'arch': arch,
+                    'url': 'https://github.com' + expected, 'sha256': asset['sha256']}
+        # Stage beside the destination so replacement is atomic even when a
+        # caller has configured separate cache and application filesystems.
+        with tempfile.NamedTemporaryFile(prefix='.desk-native-', dir=native.parent, delete=False) as output:
+            staged = Path(output.name)
+            try:
+                with candidate.open('rb') as source:
+                    shutil.copyfileobj(source, output)
+                output.flush()
+                os.fsync(output.fileno())
+                staged.chmod(native.stat().st_mode & 0o777)
+                staged.replace(native)
+            finally:
+                staged.unlink(missing_ok=True)
+        receipt.write_text(json.dumps(metadata) + '\n')
+    print('Compatible SQLite runtime installed; original binary preserved. No user data changed.', flush=True)
+
+try:
+    main()
+except (OSError, ValueError, KeyError, RuntimeError, tarfile.TarError, subprocess.SubprocessError) as error:
+    sys.exit('Codex runtime setup failed: ' + str(error))
+CODEX_RUNTIME
+}
 
 
 # Move persistent Codex data once; links keep existing CLI/desktop paths working.
@@ -3636,6 +3796,9 @@ def probe(label, directory, source=None):
             result = subprocess.run([str(binary.resolve()), '-e', script, str(module)],
                                     env=environment, capture_output=True, text=True, timeout=25)
             print('  ' + (result.stdout.strip() or result.stderr.strip() or f'exit {result.returncode}')[:4000])
+            if 'ERR_DLOPEN_FAILED' in result.stdout and re.search(r'GLIBC(?:XX)?_[0-9.]+.*not found', result.stdout):
+                print('  The packaged native SQLite module needs newer system libraries.')
+                print('  Quit Codex, then run: ./desk codex-desktop --repair-runtime')
             return result.returncode == 0
     except (OSError, subprocess.SubprocessError) as error:
         print(' ', error)
@@ -3668,11 +3831,19 @@ launch_ai_desktop_unlocked() (
     codex_desktop_doctor
     return $?
   fi
+  if [ "$app" = codex-desktop ] && [ "${1:-}" = --repair-runtime ]; then
+    if [ "$#" != 1 ]; then fail 'Use desk codex-desktop --repair-runtime without other arguments.'; return 2; fi
+    prepare_codex_desktop_runtime
+    return $?
+  fi
   if ! ai_desktop_ready "$app"; then
     if [ "${PREPARE_ON_LAUNCH:-1}" != 1 ]; then fail "Run desk install $app first."; return 1; fi
     prepare_ai_desktop_unlocked "$app" || return 1
   fi
-  if [ "$app" = codex-desktop ]; then prepare_codex_desktop_storage || return 1; fi
+  if [ "$app" = codex-desktop ]; then
+    prepare_codex_desktop_runtime || return 1
+    prepare_codex_desktop_storage || return 1
+  fi
   local cache="$GOINFRE/cache/$app"
   local executable="$APPS/$app/current/AppRun"
   export APPDIR="$APPS/$app/current"
