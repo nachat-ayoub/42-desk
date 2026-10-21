@@ -218,6 +218,7 @@ sys.exit(int(os.environ.get('DESK_TEST_EXIT', '0')))
         self.assertEqual(launch["stdin"], "piped input\n")
         self.assertEqual((cache.stat().st_mode & 0o777), 0o700)
         self.assertEqual((Path(custom_home) / "tmp").resolve(), cache / "tmp")
+        self.assertEqual((self.home / ".cache/codex-runtimes").resolve(), self.storage / "cache/codex-runtimes")
         self.assertFalse((self.state / "locks/codex.lock").exists())
 
     def test_corrupt_download_is_rejected_and_existing_install_is_preserved(self):

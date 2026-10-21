@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.15.0"
+VERSION="2.15.1"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -243,6 +243,8 @@ usage() {
   printf '  desk s [c|b]         re-import profile data\n'
   printf '  desk x               close old Flatpak/Snap apps\n'
   printf '  desk st              show status\n'
+  printf '  desk storage         report physical storage paths and sizes\n'
+  printf '  desk storage migrate move supported caches/extensions to goinfre\n'
   printf '  desk clean           reset to fresh-install state\n'
   printf '  desk fix             repair CLI + shell hook\n\n'
 
@@ -680,6 +682,181 @@ setup_runtime() {
 
   chmod 700 "$GOINFRE" 2>/dev/null || true
   load_programs
+}
+
+
+# Known cache paths only: never relocate NVM installations or database files.
+# Prepare routes new paths; relocating existing directories is an explicit command.
+storage_paths() {
+  python3 - "$1" "${2:-all}" "$HOME" "$GOINFRE" "$CONF_DIR" "$VSCODE_EXTENSIONS" <<'STORAGE'
+import errno
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import uuid
+
+mode, group, home, storage, config, extensions = sys.argv[1:]
+home, storage, config, extensions = map(Path, (home, storage, config, extensions))
+storage = storage.resolve()
+cache = storage / 'cache'
+pairs = [('codex', home / '.cache/codex-runtimes', cache / 'codex-runtimes')]
+pairs += [('code', extensions, storage / 'data/vscode/extensions')]
+for name, path in (('native', home / '.vscode/extensions'),
+                   ('flatpak', home / '.var/app/com.visualstudio.code/data/vscode/extensions')):
+    if path != extensions and (path.exists() or path.is_symlink()):
+        pairs.append(('code', path, storage / 'data/vscode/other-extensions' / name))
+profile_caches = ('Cache', 'Code Cache', 'GPUCache', 'CachedData', 'CachedProfilesData',
+                  'CachedExtensionVSIXs', 'ShaderCache', 'GrShaderCache', 'GraphiteDawnCache',
+                  'DawnGraphiteCache', 'DawnWebGPUCache', 'Crashpad')
+for name in profile_caches:
+    target = cache / ('vscode-vsix' if name == 'CachedExtensionVSIXs' else 'vscode/profile/' + name)
+    pairs.append(('code', config / 'Code' / name, target))
+for name in ('GPUCache', 'ShaderCache', 'GrShaderCache', 'Default/Cache', 'Default/Code Cache', 'Default/GPUCache'):
+    pairs.append(('brave', config / 'BraveSoftware/Brave-Browser' / name, cache / 'brave/profile' / name))
+pairs = [item for item in pairs if group == 'all' or item[0] == group]
+
+def managed(source, target):
+    return source.is_symlink() and source.resolve() == target.resolve()
+
+def location(path):
+    physical = path.resolve()
+    # The documented fallback is inside HOME and still consumes session quota.
+    if storage.is_relative_to(home.resolve()) and physical.is_relative_to(home.resolve()):
+        return 'HOME'
+    if physical.is_relative_to(storage):
+        return 'GOINFRE'
+    return 'HOME' if physical.is_relative_to(home.resolve()) else 'EXTERNAL'
+
+def size(path):
+    # Follow only the root link, not nested links into other filesystems.
+    result = subprocess.run(['du', '-s', '-B1', '--', str(path.resolve())],
+                            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    number = result.stdout.split(maxsplit=1)[0] if result.stdout else ''
+    if result.returncode or not number.isdigit():
+        return 'unreadable'
+    value = int(number)
+    for unit in ('B', 'KiB', 'MiB', 'GiB', 'TiB'):
+        if value < 1024 or unit == 'TiB':
+            return f'{value:.1f} {unit}'
+        value /= 1024
+
+def report():
+    print('Desk storage report (allocated sizes; symlink targets shown)')
+    print('Goinfre: ' + str(storage))
+    if storage.is_relative_to(home.resolve()):
+        print('Goinfre is inside HOME: these files still use session storage. Set GOINFRE to your campus storage directory.')
+    seen = set()
+    def row(name, path):
+        if str(path) in seen or not (path.exists() or path.is_symlink()):
+            return
+        seen.add(str(path))
+        state = location(path) if path.exists() else 'BROKEN LINK'
+        print(f'[{state}] {size(path) if path.exists() else "missing"}  {name}: {path}')
+        if path.is_symlink() or path.resolve() != path:
+            print('  physical: ' + str(path.resolve()))
+    for name in ('apps', 'cache', 'data'):
+        row('Desk ' + name, storage / name)
+    for _, source, target in pairs:
+        row('cache/extensions', source)
+    for path in (home / '.vscode/extensions', home / '.var/app/com.visualstudio.code/data/vscode/extensions'):
+        row('VS Code extensions', path)
+    for name, path in [('Other home cache (does not follow child links)', home / '.cache'),
+                       ('Node installation, not managed by desk', Path(os.environ.get('NVM_DIR') or home / '.nvm')),
+                       ('MariaDB database, not managed by desk', home / '.data/mariadb'),
+                       ('npm cache outside managed launches', home / '.npm'),
+                       ('Codex state/logs', Path(os.environ.get('XDG_STATE_HOME') or home / '.local/state') / 'codex')]:
+        row(name, path)
+    for path in (config / 'Code', config / 'BraveSoftware/Brave-Browser', config / 'Codex',
+                 Path(os.environ.get('CODEX_HOME') or home / '.codex'),
+                 Path(os.environ.get('CLAUDE_CONFIG_DIR') or home / '.claude'),
+                 Path(os.environ.get('HERMES_HOME') or home / '.hermes')):
+        row('Persistent profile/data', path)
+    print('Rows can overlap; do not add them together. No file contents were read.')
+    print('Move supported caches/extensions: desk storage migrate (quit affected apps first).')
+    print('Node installations, databases, custom links and persistent profiles are left in place.')
+
+try:
+    if mode == 'report':
+        report()
+        sys.exit(0)
+    pending = []
+    for owner, source, target in pairs:
+        if source.is_symlink():
+            if managed(source, target):
+                if target.exists() and not target.is_dir():
+                    raise RuntimeError(f'Invalid managed target: {target}')
+                pending.append((owner, source, target, 'linked'))
+            else:
+                print(f'Keeping custom link: {source} -> {source.resolve()}', file=sys.stderr)
+            continue
+        if source.exists() and location(source) != 'HOME':
+            # A parent directory can itself be a user-managed symlink.
+            print(f'Keeping externally stored path: {source} -> {source.resolve()}', file=sys.stderr)
+            continue
+        if source.exists():
+            if mode == 'prepare':
+                # Existing files may belong to live sessions/Flatpak apps.
+                continue
+            if not source.is_dir():
+                raise RuntimeError(f'Expected a directory: {source}')
+            if target.exists() or target.is_symlink():
+                if target.is_symlink() or not target.is_dir() or any(target.iterdir()):
+                    raise RuntimeError(f'Destination already contains data: {target}. Resolve it manually; no directories were moved.')
+            if target.resolve().is_relative_to(source.resolve()) or source.resolve().is_relative_to(target.resolve()):
+                raise RuntimeError(f'Overlapping storage paths: {source} and {target}')
+            pending.append((owner, source, target, 'move'))
+        elif mode == 'prepare':
+            pending.append((owner, source, target, 'new'))
+    moving = {owner for owner, _, _, action in pending if action == 'move'}
+    if moving:
+        names = subprocess.check_output(['ps', '-u', str(os.getuid()), '-o', 'comm='], text=True).lower().splitlines()
+        prefixes = {'codex': ('codex', 'chatgpt'), 'code': ('code', 'codium', 'electron'), 'brave': ('brave',)}
+        if any(name.strip().startswith(prefixes[owner]) for owner in moving for name in names):
+            raise RuntimeError('Quit Codex/ChatGPT, VS Code (including Flatpak), and Brave before migrating their files. No directories were moved.')
+    for owner, source, target, action in pending:
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if action in ('linked', 'new'):
+            target.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if action == 'new':
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.symlink_to(target, target_is_directory=True)
+            continue
+        if target.exists():
+            target.rmdir()  # Preflight allowed only an empty directory.
+        backup = None
+        try:
+            try:
+                source.rename(target)
+            except OSError as error:
+                if error.errno != errno.EXDEV:
+                    raise
+                # Finish the cross-filesystem copy before changing the source.
+                with tempfile.TemporaryDirectory(prefix='.desk-storage-', dir=target.parent) as temporary:
+                    staged = Path(temporary) / 'data'
+                    shutil.copytree(source, staged, symlinks=True)
+                    backup = source.with_name(source.name + '.desk-storage-' + uuid.uuid4().hex)
+                    source.rename(backup)
+                    staged.rename(target)
+            source.symlink_to(target, target_is_directory=True)
+        except OSError:
+            if not source.exists() and not source.is_symlink():
+                if backup is not None and backup.exists():
+                    backup.rename(source)
+                elif target.exists():
+                    target.rename(source)
+            raise
+        if backup is not None:
+            shutil.rmtree(backup)
+        print(f'Moved {source} -> {target}', flush=True)
+    if mode == 'migrate':
+        print('Storage migration complete. Existing files were preserved; compatibility links keep their original paths.')
+        print('Flatpak VS Code needs filesystem access to goinfre to follow relocated extensions; native desk VS Code uses the same link.')
+except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+    sys.exit('Storage setup failed: ' + str(error))
+STORAGE
 }
 
 
@@ -4225,6 +4402,9 @@ launch_ai_desktop_unlocked() (
     prepare_codex_desktop_storage || return 1
   fi
   if [ "$app" = chatgpt ]; then prepare_codex_desktop_storage || return 1; fi
+  if [ "$app" = chatgpt ] || [ "$app" = codex-desktop ]; then
+    with_lock_wait storage storage_paths prepare codex || return 1
+  fi
   local cache="$GOINFRE/cache/$app"
   local executable="$APPS/$app/current/AppRun"
   export APPDIR="$APPS/$app/current"
@@ -4869,6 +5049,18 @@ start_detached_process() {
 }
 
 
+# Apply cache settings only to managed applications and their children.
+launch_cache_environment() {
+  local cache="$GOINFRE/cache/$1"
+  export XDG_CACHE_HOME="$cache/xdg" TMPDIR="$cache/tmp" TMP="$cache/tmp" TEMP="$cache/tmp"
+  export MESA_SHADER_CACHE_DIR="$cache/mesa" __GL_SHADER_DISK_CACHE_PATH="$cache/nvidia"
+  export npm_config_cache="${npm_config_cache:-$cache/npm}"
+  export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$cache/pip}" UV_CACHE_DIR="${UV_CACHE_DIR:-$cache/uv}"
+  mkdir -p "$cache" "$XDG_CACHE_HOME" "$TMPDIR" "$MESA_SHADER_CACHE_DIR" "$__GL_SHADER_DISK_CACHE_PATH" || return 1
+  chmod 700 "$cache" "$XDG_CACHE_HOME" "$TMPDIR" || return 1
+}
+
+
 launch_vscode_unlocked() {
   local node_bin
   local cmd_pid
@@ -4886,6 +5078,8 @@ launch_vscode_unlocked() {
   if flutter_ready; then
     flutter_build_environment || return 1
   fi
+  with_lock_wait storage storage_paths prepare code || return 1
+  launch_cache_environment vscode || return 1
   node_bin=$(find_node_bin)
   export PATH="$BIN_DIR${node_bin:+:$node_bin}:$PATH"
 
@@ -4934,6 +5128,9 @@ launch_brave_unlocked() {
     return 1
   }
 
+  with_lock_wait storage storage_paths prepare brave || return 1
+  launch_cache_environment brave || return 1
+
   # With no usable render node (e.g. a workstation booted with nomodeset),
   # Mesa may fall back to llvmpipe, which Chromium blocklists for WebGL.
   # Keep the usual profile and sandbox; allow that software-rendering path.
@@ -4943,6 +5140,7 @@ launch_brave_unlocked() {
 
   start_detached_process "$APPS/brave/brave" \
     --class="$BRAVE_WM_CLASS" \
+    --disk-cache-dir="$GOINFRE/cache/brave/chromium" \
     --disk-cache-size="$BRAVE_CACHE_BYTES" \
     "${gpu_args[@]}" \
     "$@" </dev/null &
@@ -5021,6 +5219,7 @@ launch_codex() {
     with_lock_wait codex prepare_codex_unlocked || return 1
   fi
   local cache="$GOINFRE/cache/codex"
+  with_lock_wait storage storage_paths prepare codex || return 1
   local codex_home=${CODEX_HOME:-$HOME/.codex}
   local logs
   mkdir -p "$cache/tmp" "$cache/log" "$cache/xdg" || return 1
@@ -5674,7 +5873,7 @@ clean_reset() {
     if lock_try_acquire hermes; then held_hermes=1; else rc=1; fi
   fi
 
-  for extra_lock in codex-desktop claude-desktop openmausbot chatgpt; do
+  for extra_lock in codex-desktop claude-desktop openmausbot chatgpt storage; do
     [ "$rc" = 0 ] || break
     if lock_try_acquire "$extra_lock"; then extra_locks+=("$extra_lock"); else rc=1; fi
   done
@@ -5835,6 +6034,25 @@ main() {
       exit 0
       ;;
   esac
+
+  # The report is read-only, including on a workstation without an install.
+  if [ "$cmd" = storage ]; then
+    if [ "$#" -gt 1 ] || { [ "$#" = 1 ] && [ "$1" != migrate ]; }; then
+      fail 'Use: desk storage [migrate]'
+      return 2
+    fi
+    if [ "$#" = 0 ]; then
+      GOINFRE=$(find_goinfre)
+      OLD_VSCODE=$(newest "$HOME"/.var/app/*/config/Code "$HOME"/snap/code/current/.config/Code)
+      VSCODE_EXTENSIONS=$(find_vscode_extensions)
+      storage_paths report
+    else
+      setup_runtime || return $?
+      with_lock_wait core install_self || return 1
+      with_lock_wait storage storage_paths migrate
+    fi
+    return $?
+  fi
 
   setup_runtime || return $?
 

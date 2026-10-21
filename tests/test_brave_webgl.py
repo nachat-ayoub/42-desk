@@ -21,6 +21,7 @@ class BraveWebGLTests(unittest.TestCase):
         self.profile = self.root / "config/BraveSoftware/Brave-Browser"
         self.env = dict(os.environ)
         self.env.update(
+            HOME=str(self.root / "home"),
             GOINFRE=str(self.root / "storage"),
             XDG_CONFIG_HOME=str(self.root / "config"),
             XDG_DATA_HOME=str(self.root / "data"),
@@ -29,6 +30,7 @@ class BraveWebGLTests(unittest.TestCase):
             DESK_TEST_BIN=str(self.root / "bin"),
             DESK_TEST_HAS_GPU="0",
         )
+        (self.root / "home").mkdir()
         for app in ("brave/brave", "vscode/bin/code"):
             binary = self.root / "storage/apps" / app
             binary.parent.mkdir(parents=True)

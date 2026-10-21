@@ -1101,6 +1101,56 @@ allowing Code and Brave setup to proceed independently.
 
 ## Storage
 
+Check where files actually live, including symlink targets and allocated sizes:
+
+```bash
+desk storage
+```
+
+The report is read-only. `HOME` means session storage, `GOINFRE` means the
+configured goinfre directory, and `EXTERNAL` means another location. Rows can
+overlap, so their sizes should not be added together. If goinfre falls back to
+`~/.local/opt`, the report labels it as home storage: this fallback still uses
+your session quota.
+
+To move existing supported caches and VS Code extensions, fully quit
+Codex/ChatGPT, VS Code (including Flatpak), and Brave, then run:
+
+```bash
+desk storage migrate
+desk storage
+```
+
+Migration preserves files and executable permissions and leaves compatibility
+symlinks at their original paths. It covers `~/.cache/codex-runtimes`, native and
+Flatpak VS Code extensions, VS Code profile caches, and Brave's main profile
+caches. Existing custom links and externally stored directories are preserved.
+Conflicting nonempty destinations and running affected applications stop the
+migration before any files move. Cross-filesystem copies finish before their
+original directories are replaced. A failed copy leaves the original intact.
+
+Use native VS Code through `desk code` after relocating extensions. If you also
+use Flatpak VS Code, its sandbox needs filesystem access to the goinfre directory
+to follow those links. Persistent profiles, settings, credentials and databases
+are not part of this migration; previous Desktop data migration still applies.
+Back up important data stored in goinfre because campus storage may be cleared.
+
+New managed VS Code and Brave launches direct their cache, temporary files, and
+shader caches into goinfre. New VS Code extension/cache directories are linked
+there as well. Existing directories are preserved until `desk storage migrate`.
+Explicit npm, pip and uv cache overrides are respected. The official ChatGPT
+runtime installer hardcodes `~/.cache/codex-runtimes` independently of
+`XDG_CACHE_HOME`; desk links new runtime directories to
+`$GOINFRE/cache/codex-runtimes`. Migrate an existing directory with the command
+above. This applies to managed Codex CLI and Codex/ChatGPT Desktop launches.
+
+An entry in a home-storage scan can still point into goinfre through a symlink;
+check the report's physical path. `~/.nvm/versions/node/.../node` is an existing
+Node installation, and `~/.data/mariadb` contains database files. Desk reports
+them but does not move or delete them. Other programs launched independently of
+desk can still write to home, as can explicit cache overrides and persistent
+configuration/history directories.
+
 Applications normally live in:
 
 ```text

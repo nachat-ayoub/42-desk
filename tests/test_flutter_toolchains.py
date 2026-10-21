@@ -203,7 +203,7 @@ if '--install' in args and not (root / 'licences-pending').exists():
 import json, os, pathlib, sys
 record = {'args': sys.argv[1:], 'env': {name: os.environ.get(name) for name in (
     'ANDROID_HOME', 'ANDROID_SDK_ROOT', 'ADB_SERVER_SOCKET', 'FLUTTER_ROOT',
-    'PUB_CACHE', 'GRADLE_USER_HOME', 'XDG_CONFIG_HOME', 'TMPDIR')}}
+    'PUB_CACHE', 'GRADLE_USER_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'TMPDIR')}}
 (pathlib.Path(os.environ['DESK_FIXTURE']) / 'vscode-launch.json').write_text(json.dumps(record))
 ''')
         self.run_desk('code', 'project with spaces')
@@ -220,7 +220,8 @@ record = {'args': sys.argv[1:], 'env': {name: os.environ.get(name) for name in (
         self.assertEqual(env['PUB_CACHE'], str(self.flutter / 'cache/pub'))
         self.assertEqual(env['GRADLE_USER_HOME'], str(self.flutter / 'cache/gradle'))
         self.assertEqual(env['XDG_CONFIG_HOME'], self.env['XDG_CONFIG_HOME'])
-        self.assertEqual(env['TMPDIR'], self.env.get('TMPDIR'))
+        self.assertEqual(env['TMPDIR'], str(self.storage / 'cache/vscode/tmp'))
+        self.assertEqual(env['XDG_CACHE_HOME'], str(self.storage / 'cache/vscode/xdg'))
         self.assertEqual(launch['args'][-1], 'project with spaces')
 
     def test_shell_hook_exposes_emulator_sdk_even_without_cmdline_tools(self):
