@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.15.1"
+VERSION="2.16.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -42,7 +42,7 @@ PROGRAMS_FILE="$STATE_DIR/programs"
 OPEN_PROGRAMS_FILE="$STATE_DIR/open-programs"
 # Existing installations keep their original two-program selection.
 PROGRAMS=(code brave)
-ALL_PROGRAMS=(code brave codex claude android flutter hermes codex-desktop claude-desktop hermes-desktop openmausbot chatgpt)
+ALL_PROGRAMS=(code brave codex claude android flutter hermes codex-desktop claude-desktop hermes-desktop openmausbot chatgpt cua)
 PICKER_PROGRAMS=("${ALL_PROGRAMS[@]}")
 
 AUTO_CHECK_SECONDS=$((12 * 60 * 60))
@@ -186,6 +186,7 @@ label() {
     brave) echo "Brave" ;;
     code) echo "VS Code" ;;
     codex) echo "Codex CLI" ;;
+    cua) echo "Cua Driver (Codex computer use)" ;;
     claude) echo "Claude Code" ;;
     android) echo "Android 11 Google Play" ;;
     flutter) echo "Flutter SDK" ;;
@@ -226,6 +227,8 @@ usage() {
   printf '  desk c [ARGS]        open VS Code\n'
   printf '  desk b [ARGS]        open Brave\n'
   printf '  desk ai [ARGS]       run Codex CLI in this terminal\n'
+  printf '  desk cua [ARGS]      Cua Driver diagnostics or native commands\n'
+  printf '  desk cua setup       connect Cua Driver tools to Codex\n'
   printf '  desk claude [ARGS]   run Claude Code in this terminal\n'
   printf '  desk hermes [ARGS]   run Hermes Agent in this terminal\n'
   printf '  desk hermes-desktop open the official Hermes Desktop app\n'
@@ -288,6 +291,7 @@ normalize_programs() {
         cc|claude-code) word=claude ;;
         emulator) word=android ;;
         hermes-agent) word=hermes ;;
+        cua-driver) word=cua ;;
         chatgpt-desktop) word=chatgpt ;;
         all) requested+=("${ALL_PROGRAMS[@]}"); continue ;;
         none) none=1 ;;
@@ -384,7 +388,7 @@ import tty
 title, action = sys.argv[1:3]
 separator = sys.argv.index("--", 3)
 labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play", "flutter": "Flutter SDK", "hermes": "Hermes Agent (CLI)", "hermes-desktop": "Hermes Desktop (official)",
-          "codex-desktop": "Codex Desktop (community Linux port)", "claude-desktop": "Claude Desktop (community Linux port)", "openmausbot": "OpenMausBot", "chatgpt": "ChatGPT Desktop (official, includes Codex)",
+          "codex-desktop": "Codex Desktop (community Linux port)", "claude-desktop": "Claude Desktop (community Linux port)", "openmausbot": "OpenMausBot", "chatgpt": "ChatGPT Desktop (official, includes Codex)", "cua": "Cua Driver (Codex computer use)",
           "android-toolchain": "Android app builds", "web-toolchain": "Web (Brave / Chrome)", "linux-toolchain": "Linux desktop"}
 programs = [(name, labels[name]) for name in sys.argv[3:separator]]
 chosen = set(sys.argv[separator + 1:]).intersection(name for name, _ in programs)
@@ -526,6 +530,7 @@ show_next_steps() {
   selected claude && printf '  Claude     claude  (sign in on first use)\n'
   selected android && printf '  Android    android  (Google Play, 1080x2424 display)\n'
   selected flutter && printf '  Flutter    flutter doctor   |   dart --version\n'
+  selected cua && printf '  Cua Driver desk cua doctor   (restart Codex to load its MCP tools)\n'
   selected hermes && printf '  Hermes     hermes setup   (choose your provider on first use)\n'
   selected hermes-desktop && printf '  Hermes Desktop  hermes-desktop\n'
   selected openmausbot && printf '  OpenMausBot     openmausbot  (choose a logged-in agent in Settings → Engines)\n'
@@ -772,6 +777,7 @@ def report():
     for path in (config / 'Code', config / 'BraveSoftware/Brave-Browser', config / 'Codex',
                  Path(os.environ.get('CODEX_HOME') or home / '.codex'),
                  Path(os.environ.get('CLAUDE_CONFIG_DIR') or home / '.claude'),
+                 Path(os.environ.get('CUA_DRIVER_RS_HOME') or os.environ.get('CUA_DRIVER_HOME') or home / '.cua-driver'),
                  Path(os.environ.get('HERMES_HOME') or home / '.hermes')):
         row('Persistent profile/data', path)
     print('Rows can overlap; do not add them together. No file contents were read.')
@@ -1969,6 +1975,8 @@ write_shell_hook() {
       fi
     fi
     for program in "${PROGRAMS[@]}"; do
+      # The Cua SDK owns `cua`; our native Driver wrapper is `cua-driver`.
+      [ "$program" != cua ] || program=cua-driver
       printf 'unalias %s 2>/dev/null || true\n' "$program"
       if [ "$shell_name" = zsh ]; then
         printf 'unfunction %s 2>/dev/null || true\n' "$program"
@@ -2001,6 +2009,7 @@ write_launchers() {
   if selected codex; then write_wrapper codex codex || return 1; fi
   if selected claude; then write_wrapper claude claude || return 1; fi
   if selected hermes; then write_wrapper hermes hermes || return 1; fi
+  if selected cua; then write_wrapper cua-driver cua || return 1; fi
   if selected hermes-desktop; then write_hermes_desktop_launcher || return 1; fi
   local desktop_app
   for desktop_app in codex-desktop claude-desktop openmausbot chatgpt; do
@@ -4778,6 +4787,382 @@ launch_hermes_desktop_unlocked() (
 
 
 # -------------------------------------------------------------------
+# Cua Driver (official Linux release; Codex stdio MCP integration)
+# -------------------------------------------------------------------
+
+cua_ready() {
+  [ -x "$APPS/cua/current/cua-driver" ] && [ -f "$APPS/cua/.installed-version" ] &&
+    [ -f "$APPS/cua/current/skills/cua-driver/SKILL.md" ] &&
+    [ -f "$APPS/cua/current/skills/cua-driver/LINUX.md" ]
+}
+
+
+cua_running() {
+  local executable
+  executable=$(readlink -f "$APPS/cua/current/cua-driver" 2>/dev/null) || return 1
+  [ -f "$executable" ] || return 1
+  python3 - "$APPS/cua/releases" <<'PY'
+import glob, os, sys
+root = os.path.realpath(sys.argv[1]) + '/'
+for link in glob.iglob('/proc/[0-9]*/exe'):
+    try:
+        if os.readlink(link).startswith(root):
+            sys.exit(0)
+    except OSError:
+        pass
+sys.exit(1)
+PY
+}
+
+
+cua_environment() {
+  launch_cache_environment cua || return 1
+  export CUA_DRIVER_RS_HOME="${CUA_DRIVER_RS_HOME:-${CUA_DRIVER_HOME:-$GOINFRE/data/cua/driver}}"
+  export CUA_DRIVER_HOME="${CUA_DRIVER_HOME:-$CUA_DRIVER_RS_HOME}"
+  export CUA_DRIVER_TELEMETRY_HOME="${CUA_DRIVER_TELEMETRY_HOME:-$CUA_DRIVER_RS_HOME}"
+  # Updates belong to desk. Preserve the user's desktop/session bus settings.
+  export CUA_DRIVER_RS_UPDATE_CHECK=0
+  mkdir -p "$CUA_DRIVER_RS_HOME" "$CUA_DRIVER_TELEMETRY_HOME" || return 1
+  chmod 700 "$CUA_DRIVER_RS_HOME" || return 1
+  # A few upstream config paths still use HOME independently of RS_HOME.
+  if [ ! -e "$HOME/.cua-driver" ] && [ ! -L "$HOME/.cua-driver" ]; then
+    ln -sT "$CUA_DRIVER_RS_HOME" "$HOME/.cua-driver" || return 1
+  fi
+}
+
+
+install_cua() (
+  if cua_ready && [ "${UPDATE_ONLY:-0}" != 1 ]; then
+    ok "Cua Driver $(cat "$APPS/cua/.installed-version")"
+    return 0
+  fi
+  if cua_running; then
+    warn 'Cua Driver is running. Quit its Codex sessions or stop the driver before updating.'
+    return 0
+  fi
+  local tool
+  for tool in curl python3 ldd; do
+    command -v "$tool" >/dev/null 2>&1 || { fail "Cua Driver needs $tool."; return 1; }
+  done
+  [ "$(uname -s)" = Linux ] || { fail 'Cua Driver setup currently supports Linux.'; return 1; }
+  mkdir -p "$APPS/cua" || return 1
+  info 'Checking official Cua Driver Linux release'
+  python3 - "$APPS/cua" "$(uname -m)" <<'CUA_INSTALL'
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+base, architecture = Path(sys.argv[1]), sys.argv[2]
+arch = {'x86_64': 'x86_64', 'aarch64': 'arm64', 'arm64': 'arm64'}.get(architecture)
+root = 'https://github.com/trycua/cua/releases'
+current = base / 'current'
+marker = base / '.installed-version'
+
+def fetch(url, destination):
+    subprocess.run(['curl', '-fsSL', '--proto', '=https', '--proto-redir', '=https',
+                    '--tlsv1.2', '--connect-timeout', '15', '--max-time', '300',
+                    url, '-o', str(destination)], check=True)
+
+def version(text):
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', text):
+        raise RuntimeError('Invalid Cua Driver version')
+    return tuple(map(int, text.split('.')))
+
+def unpack(archive, destination, strip=''):
+    with tarfile.open(archive) as bundle:
+        members = bundle.getmembers()
+        if len(members) > 1024 or sum(item.size for item in members) > 512 * 1024**2:
+            raise RuntimeError('Unexpectedly large Cua archive')
+        seen = set()
+        for item in members:
+            name = PurePosixPath(item.name)
+            if name.is_absolute() or '..' in name.parts or not (item.isdir() or item.isfile()):
+                raise RuntimeError('Unsafe path or link in Cua archive')
+            parts = name.parts
+            if strip:
+                if not parts or parts[0] != strip:
+                    raise RuntimeError('Unexpected skill archive root')
+                parts = parts[1:]
+            if not parts:
+                continue
+            relative = Path(*parts)
+            if relative in seen:
+                raise RuntimeError('Duplicate path in Cua archive')
+            seen.add(relative)
+            target = destination / relative
+            if item.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with bundle.extractfile(item) as source, target.open('wb') as output:
+                    shutil.copyfileobj(source, output)
+                target.chmod(0o755 if item.mode & 0o111 else 0o644)
+
+try:
+    if not arch:
+        raise RuntimeError('Cua Driver supports Linux x86-64 and ARM64')
+    with tempfile.TemporaryDirectory(prefix='install-', dir=base) as temporary:
+        stage = Path(temporary)
+        try:
+            fetch(root + '?q=cua-driver-rs-v&expanded=true', stage / 'releases.html')
+        except subprocess.CalledProcessError:
+            if (current / 'cua-driver').is_file() and marker.is_file():
+                print('Cua release server unavailable; keeping the installed version.', file=sys.stderr)
+                sys.exit(0)
+            raise
+        tags = set(re.findall(r'/trycua/cua/releases/(?:tag|expanded_assets)/(cua-driver-rs-v[0-9]+\.[0-9]+\.[0-9]+)(?=["/<\s?])',
+                              (stage / 'releases.html').read_text()))
+        # Upstream explicitly withdrew this version. Stable Driver tags may be
+        # marked prerelease on GitHub; their exact tag syntax defines the channel.
+        tags.discard('cua-driver-rs-v0.28.3')
+        if not tags:
+            raise RuntimeError('No stable Cua Driver release was found')
+        tag = max(tags, key=lambda item: version(item.removeprefix('cua-driver-rs-v')))
+        selected = tag.removeprefix('cua-driver-rs-v')
+        if marker.exists() and (current / 'cua-driver').is_file() and version(marker.read_text().strip()) >= version(selected):
+            print('Cua Driver is already current.', flush=True)
+            sys.exit(0)
+        if shutil.disk_usage(base).free < 1024**3:
+            raise RuntimeError('Keep at least 1 GiB free in goinfre for Cua installation')
+        url = root + '/download/' + tag + '/'
+        fetch(url + 'SHA256SUMS', stage / 'SHA256SUMS')
+        checksums = {}
+        for line in (stage / 'SHA256SUMS').read_text().splitlines():
+            if not line.strip():
+                continue
+            digest, filename = line.split(maxsplit=1)
+            filename = filename.lstrip('*')
+            if not re.fullmatch(r'[a-fA-F0-9]{64}', digest) or filename in checksums:
+                raise RuntimeError('Invalid or duplicate Cua checksum entry')
+            checksums[filename] = digest.lower()
+        package = f'cua-driver-rs-{selected}-linux-{arch}-binary.tar.gz'
+        skills = f'{tag}-skills.tar.gz'
+        for filename in (package, skills):
+            expected = checksums.get(filename)
+            if expected is None:
+                raise RuntimeError('Missing published checksum for ' + filename)
+            fetch(url + filename, stage / filename)
+            actual = hashlib.sha256((stage / filename).read_bytes()).hexdigest()
+            if actual != expected:
+                raise RuntimeError('Cua checksum mismatch for ' + filename)
+            # Current upstream releases require the published signature bundle.
+            fetch(url + filename + '.sigstore.json', stage / (filename + '.sigstore.json'))
+            bundle = json.loads((stage / (filename + '.sigstore.json')).read_text())
+            if not isinstance(bundle, dict) or not bundle:
+                raise RuntimeError('Invalid Cua signature bundle')
+            if shutil.which('cosign'):
+                subprocess.run(['cosign', 'verify-blob', '--bundle', str(stage / (filename + '.sigstore.json')),
+                                '--certificate-identity', 'https://github.com/trycua/cua/.github/workflows/cd-rust-cua-driver.yml@refs/tags/' + tag,
+                                '--certificate-oidc-issuer', 'https://token.actions.githubusercontent.com',
+                                str(stage / filename)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        content = stage / 'content'
+        content.mkdir(mode=0o700)
+        unpack(stage / package, content)
+        skill_dir = content / 'skills/cua-driver'
+        unpack(stage / skills, skill_dir, skills.removesuffix('.tar.gz'))
+        if not (skill_dir / 'SKILL.md').is_file() or not (skill_dir / 'LINUX.md').is_file():
+            raise RuntimeError('Cua skill pack is incomplete')
+        binary = content / 'cua-driver'
+        environment = dict(os.environ, HOME=str(stage / 'probe-home'), CUA_DRIVER_RS_HOME=str(stage / 'probe-state'),
+                           CUA_DRIVER_TELEMETRY_HOME=str(stage / 'probe-state'), DO_NOT_TRACK='1', CUA_DRIVER_RS_UPDATE_CHECK='0')
+        result = subprocess.run([str(binary), '--version'], env=environment, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        if result.returncode or result.stdout.strip() != 'cua-driver ' + selected:
+            raise RuntimeError('Cua cannot run on this system: ' + result.stderr[-1500:])
+        libraries = subprocess.run(['ldd', str(binary)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if libraries.returncode or 'not found' in libraries.stdout:
+            raise RuntimeError('Cua has missing system libraries: ' + libraries.stdout[-2000:])
+        releases = base / 'releases'
+        releases.mkdir(exist_ok=True)
+        release = releases / (selected + '-linux-' + arch)
+        if release.exists():
+            raise RuntimeError('An unactivated Cua release already exists at ' + str(release) + '; preserve or remove it before retrying')
+        (content / '.desk-release.json').write_text(json.dumps({'version': selected, 'arch': arch,
+             'source': 'trycua/cua', 'tag': tag, 'sha256': checksums[package],
+             'skills_sha256': checksums[skills], 'signature_verified': bool(shutil.which('cosign'))}) + '\n')
+        content.rename(release)
+        link = base / 'current.new'
+        link.unlink(missing_ok=True)
+        link.symlink_to(release.relative_to(base))
+        link.replace(current)
+        marker.write_text(selected + '\n')
+        print('Installed Cua Driver ' + selected + '. No desktop actions were performed.', flush=True)
+except (OSError, ValueError, RuntimeError, tarfile.TarError, subprocess.SubprocessError) as error:
+    sys.exit('Cua setup failed: ' + str(error))
+CUA_INSTALL
+)
+
+
+cua_codex_binary() {
+  local candidate
+  for candidate in "$APPS/codex/bin/codex" "$APPS/chatgpt/current/resources/codex" "$APPS/codex-desktop/current/resources/bin/codex"; do
+    if [ -x "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+  done
+  candidate=$(command -v codex 2>/dev/null || true)
+  if [ -n "$candidate" ] && [ "$candidate" != "$BIN_DIR/codex" ] && [ -x "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  return 1
+}
+
+
+setup_cua_codex() {
+  local codex mode=${1:-add}
+  if ! codex=$(cua_codex_binary); then
+    [ "$mode" != remove ] || return 0
+    info 'Installing Codex CLI for Cua integration'
+    with_lock_wait codex prepare_codex_unlocked || return 1
+    codex=$(cua_codex_binary) || return 1
+  fi
+  python3 - "$codex" "$BIN_DIR/desk" "$GOINFRE" "${CODEX_HOME:-$HOME/.codex}" "$APPS/cua/current/skills/cua-driver" "$mode" <<'CUA_CODEX'
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+codex, desk, storage, codex_home, skill, mode = sys.argv[1:]
+home = Path(codex_home)
+
+def backup_config():
+    config = home / 'config.toml'
+    if config.exists():
+        backups = Path(storage) / 'data/cua/config-backups'
+        backups.mkdir(parents=True, exist_ok=True, mode=0o700)
+        backups.chmod(0o700)
+        fd, backup = tempfile.mkstemp(prefix='codex-config-', suffix='.toml', dir=backups)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(config.read_bytes())
+        print('Codex config backup: ' + backup, flush=True)
+
+def forward_desktop_environment():
+    # Codex filters stdio MCP environments. Inherit names at each startup,
+    # rather than saving a stale DISPLAY or session-bus address at install time.
+    names = ['DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR',
+             'DBUS_SESSION_BUS_ADDRESS', 'AT_SPI_BUS_ADDRESS', 'XDG_SESSION_TYPE',
+             'XDG_CURRENT_DESKTOP', 'XDG_SESSION_DESKTOP', 'XDG_DATA_HOME',
+             'XDG_DATA_DIRS', 'XDG_CONFIG_HOME', 'CUA_DRIVER_RS_HOME', 'CUA_DRIVER_HOME',
+             'CUA_DRIVER_TELEMETRY_HOME', 'CUA_DRIVER_RS_TELEMETRY_ENABLED', 'DO_NOT_TRACK']
+    config = (home / 'config.toml').resolve()
+    original = config.read_bytes()
+    text = original.decode('utf-8')
+    # Edit only the new table just created by Codex's native TOML writer.
+    headers = list(re.finditer(r'(?m)^\[mcp_servers\.(?:cua-driver|"cua-driver"|\'cua-driver\')\][ \t]*\r?\n', text))
+    if len(headers) != 1:
+        raise RuntimeError('Cannot identify the new Cua MCP table to configure desktop environment forwarding')
+    index = headers[0].end()
+    updated = text[:index] + 'env_vars = ' + json.dumps(names) + '\n' + text[index:]
+    def write(contents):
+        fd, filename = tempfile.mkstemp(prefix='.desk-cua-config-', dir=config.parent)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                os.fchmod(stream.fileno(), config.stat().st_mode & 0o777)
+                stream.write(contents)
+            os.replace(filename, config)
+        finally:
+            Path(filename).unlink(missing_ok=True)
+    write(updated.encode('utf-8'))
+    result = subprocess.run([codex, 'mcp', 'list', '--json'], env=environment, cwd=Path.home(),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    if result.returncode:
+        write(original)
+        raise RuntimeError('Codex rejected desktop environment forwarding; its previous valid configuration was restored')
+
+try:
+    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    environment = dict(os.environ, CODEX_HOME=str(home))
+    # The native Codex CLI parses and edits TOML; Python 3.10 has no tomllib.
+    result = subprocess.run([codex, 'mcp', 'list', '--json'], env=environment, cwd=Path.home(), text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    if result.returncode:
+        raise RuntimeError('Codex cannot read its MCP configuration. Fix its reported configuration error first; no configuration was changed. ' + result.stderr[-1000:])
+    servers = json.loads(result.stdout)
+    existing = next((item for item in servers if item.get('name') == 'cua-driver'), None)
+    link = Path.home() / '.agents/skills/cua-driver'
+    expected = Path(skill)
+    if mode == 'remove':
+        transport = existing.get('transport', {}) if existing else {}
+        if transport.get('command') == desk and transport.get('args') == ['cua', 'mcp']:
+            backup_config()
+            subprocess.run([codex, 'mcp', 'remove', 'cua-driver'], env=environment, cwd=Path.home(),
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+            print('Removed desk-managed Cua MCP registration; other Codex settings were preserved.', flush=True)
+        if link.is_symlink() and link.resolve() == expected.resolve():
+            link.unlink()
+        sys.exit(0)
+    if existing:
+        transport = existing.get('transport', {})
+        if transport.get('command') != desk or transport.get('args') != ['cua', 'mcp']:
+            print('Keeping your existing cua-driver MCP configuration. Use desk cua doctor to check the managed driver.', file=sys.stderr)
+            sys.exit(0)
+        print('Codex Cua MCP configuration already exists; its settings were preserved.', flush=True)
+    else:
+        backup_config()
+        subprocess.run([codex, 'mcp', 'add', '--env', 'GOINFRE=' + storage, 'cua-driver', '--', desk, 'cua', 'mcp'],
+                       env=environment, cwd=Path.home(), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        forward_desktop_environment()
+        print('Registered Cua Driver MCP with Codex. Restart Codex/ChatGPT to load it.', flush=True)
+    # Codex discovers global skills here. Keep user-owned skill files/links.
+    if link.is_symlink() and link.resolve() == expected.resolve():
+        pass
+    elif link.exists() or link.is_symlink():
+        print('Keeping your existing cua-driver skill at ' + str(link), file=sys.stderr)
+    else:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(expected, target_is_directory=True)
+except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+    sys.exit('Cua Codex setup failed: ' + str(error))
+CUA_CODEX
+}
+
+
+prepare_cua_unlocked() {
+  install_cua || return 1
+  cua_ready || return 1
+  write_wrapper cua-driver cua || return 1
+  cua_environment || return 1
+  with_lock_wait cua-config setup_cua_codex
+}
+
+
+launch_cua() (
+  if [ "${1:-}" = setup ]; then
+    [ "$#" = 1 ] || { fail 'Use: desk cua setup'; return 2; }
+    with_lock_wait core install_self || return 1
+    with_lock_wait cua prepare_cua_unlocked
+    return $?
+  fi
+  if [ "${1:-}" = update ]; then
+    [ "$#" = 1 ] || { fail 'Use: desk update cua'; return 2; }
+    update_installed_programs cua
+    return $?
+  fi
+  if ! cua_ready; then
+    # Stdout must remain clean JSON-RPC. MCP startup never downloads software.
+    if [ "${1:-}" = mcp ] || [ "${PREPARE_ON_LAUNCH:-1}" != 1 ]; then
+      fail 'Cua Driver is not installed. Run desk install cua.'
+      return 1
+    fi
+    with_lock_wait core install_self || return 1
+    with_lock_wait cua prepare_cua_unlocked || return 1
+  fi
+  cua_environment || return 1
+  if [ "$#" = 0 ] || [ "${1:-}" = --doctor ]; then set -- doctor; fi
+  exec "$APPS/cua/current/cua-driver" "$@"
+)
+
+
+# -------------------------------------------------------------------
 # Preparation
 # -------------------------------------------------------------------
 
@@ -4929,6 +5314,7 @@ prepare_all() {
       android) prepare_android || failed=1 ;;
       flutter) prepare_flutter || failed=1 ;;
       hermes) prepare_hermes || failed=1 ;;
+      cua) with_lock_wait cua prepare_cua_unlocked || failed=1 ;;
       hermes-desktop) with_lock_wait hermes prepare_hermes_desktop_unlocked || failed=1 ;;
       codex-desktop|claude-desktop|openmausbot|chatgpt) with_lock_wait "$program" prepare_ai_desktop_unlocked "$program" || failed=1 ;;
     esac
@@ -4950,6 +5336,7 @@ program_executable() {
     android) printf '%s/android/sdk/emulator/emulator\n' "$APPS" ;;
     flutter) printf '%s/flutter/sdk/bin/flutter\n' "$APPS" ;;
     hermes) printf '%s/hermes/current/source/.hermes/bin/hermes\n' "$APPS" ;;
+    cua) printf '%s/cua/current/cua-driver\n' "$APPS" ;;
     hermes-desktop) printf '%s/hermes/current/desktop\n' "$APPS" ;;
     codex-desktop|claude-desktop|openmausbot|chatgpt) printf '%s/%s/current/AppRun\n' "$APPS" "$1" ;;
     *) return 2 ;;
@@ -4962,6 +5349,7 @@ program_installed() {
   if [ "$1" = android ]; then android_ready; return $?; fi
   if [ "$1" = flutter ]; then flutter_ready; return $?; fi
   if [ "$1" = hermes ]; then hermes_ready; return $?; fi
+  if [ "$1" = cua ]; then cua_ready; return $?; fi
   if [ "$1" = hermes-desktop ]; then hermes_desktop_ready; return $?; fi
   case "$1" in codex-desktop|claude-desktop|openmausbot|chatgpt) ai_desktop_ready "$1"; return $? ;; esac
   executable=$(program_executable "$1") || return $?
@@ -4977,6 +5365,7 @@ program_ready() {
     android) android_ready ;;
     flutter) flutter_ready ;;
     hermes) hermes_ready ;;
+    cua) cua_ready ;;
     hermes-desktop) hermes_desktop_ready ;;
     codex-desktop|claude-desktop|openmausbot|chatgpt) ai_desktop_ready "$1" ;;
     *) return 2 ;;
@@ -5026,6 +5415,7 @@ update_installed_programs() {
       android) with_lock_wait android install_android || failed=1 ;;
       flutter) with_lock_wait flutter install_flutter || failed=1 ;;
       hermes) with_lock_wait hermes install_hermes || failed=1 ;;
+      cua) with_lock_wait cua prepare_cua_unlocked || failed=1 ;;
       hermes-desktop) with_lock_wait hermes install_hermes hermes-desktop || failed=1 ;;
       codex-desktop|claude-desktop|openmausbot|chatgpt) with_lock_wait "$program" install_ai_desktop "$program" || failed=1 ;;
     esac
@@ -5187,6 +5577,10 @@ open_app() {
       launch_flutter "$name" "$@"
       ;;
 
+    cua)
+      launch_cua "$@"
+      ;;
+
     hermes)
       launch_hermes "$@"
       ;;
@@ -5323,7 +5717,7 @@ open_programs() {
       fail "$(label "$program") needs setup. Run 'desk $program' to finish setup first."
       return 1
     fi
-    case "$program" in codex|claude|flutter|hermes) terminal_count=$((terminal_count + 1)) ;; esac
+    case "$program" in codex|claude|flutter|hermes|cua) terminal_count=$((terminal_count + 1)) ;; esac
   done
   if [ "$terminal_count" -gt 1 ] && ! find_launch_terminal; then
     fail 'Opening multiple terminal tools needs a graphical session and a terminal emulator.'
@@ -5346,7 +5740,7 @@ open_programs() {
   [ "$failed" = 0 ] || return "$failed"
   for program in "${PROGRAMS[@]}"; do
     case "$program" in
-      codex|claude|flutter|hermes)
+      codex|claude|flutter|hermes|cua)
         if [ "$terminal_count" = 1 ]; then
           if [ "$program" = flutter ]; then open_app flutter doctor; else open_app "$program"; fi
           return $?
@@ -5449,6 +5843,11 @@ shell_prepare_component() {
     hermes)
       if hermes_ready; then return 0; fi
       if with_lock_try hermes prepare_hermes_unlocked; then rc=0; else rc=$?; fi
+      ;;
+
+    cua)
+      if cua_ready; then return 0; fi
+      if with_lock_try cua prepare_cua_unlocked; then rc=0; else rc=$?; fi
       ;;
 
     hermes-desktop)
@@ -5618,6 +6017,11 @@ native_apps_running() {
     running=1
   fi
 
+  if cua_running; then
+    warn 'Cua Driver is running. Close its Codex sessions or stop the driver first.'
+    running=1
+  fi
+
   local desktop_app
   for desktop_app in codex-desktop claude-desktop openmausbot chatgpt; do
     if ai_desktop_running "$desktop_app"; then
@@ -5659,6 +6063,9 @@ clean_reset_unlocked() {
   local backup
   local stamp
 
+  # Remove only our own MCP entry while its Codex backend still exists.
+  if cua_ready; then setup_cua_codex remove || return 1; fi
+
   stamp=$(date +%Y%m%d-%H%M%S)
   backup="$GOINFRE/backups/desk-clean-$stamp"
 
@@ -5685,6 +6092,8 @@ clean_reset_unlocked() {
     "$GOINFRE/cache/codex" \
     "$APPS/claude" \
     "$GOINFRE/cache/claude" \
+    "$APPS/cua" \
+    "$GOINFRE/cache/cua" \
     "$APPS/hermes" \
     "$GOINFRE/cache/hermes" \
     "$APPS/codex-desktop" \
@@ -5722,6 +6131,7 @@ clean_reset_unlocked() {
 
   if managed_wrapper "$BIN_DIR/flutter"; then rm -f "$BIN_DIR/flutter"; fi
   if managed_wrapper "$BIN_DIR/dart"; then rm -f "$BIN_DIR/dart"; fi
+  if managed_wrapper "$BIN_DIR/cua-driver"; then rm -f "$BIN_DIR/cua-driver"; fi
   if managed_wrapper "$BIN_DIR/hermes"; then rm -f "$BIN_DIR/hermes"; fi
   if managed_wrapper "$BIN_DIR/hermes-desktop"; then rm -f "$BIN_DIR/hermes-desktop"; fi
   rm -f "$DATA_DIR/applications/hermes-desktop-desk.desktop"
@@ -5784,6 +6194,7 @@ clean_reset() {
   printf '  • desk-managed Brave\n'
   printf '  • desk-managed Codex CLI and its cache\n'
   printf '  • desk-managed Claude Code and its cache\n'
+  printf '  • desk-managed Cua Driver, cache and MCP registration (state and other Codex settings are kept)\n'
   printf '  • desk-managed Hermes Agent and its runtime/cache (user data is kept)\n'
   printf '  • community Codex Desktop and Claude Desktop (user profiles are kept)\n'
   printf '  • Flutter SDK (its configuration and Pub/Gradle caches are kept)\n'
@@ -5873,7 +6284,7 @@ clean_reset() {
     if lock_try_acquire hermes; then held_hermes=1; else rc=1; fi
   fi
 
-  for extra_lock in codex-desktop claude-desktop openmausbot chatgpt storage; do
+  for extra_lock in codex-desktop claude-desktop openmausbot chatgpt storage cua cua-config; do
     [ "$rc" = 0 ] || break
     if lock_try_acquire "$extra_lock"; then extra_locks+=("$extra_lock"); else rc=1; fi
   done
@@ -5917,7 +6328,7 @@ clean_reset() {
 # -------------------------------------------------------------------
 
 show_status() {
-  local program choice state version executable command
+  local program choice state version executable command wrapper
   printf '%b42-desk%b %s\n\n' "$C_BOLD" "$C_RESET" "$VERSION"
   printf '  Storage   %s\n' "$(pretty "$GOINFRE")"
   printf '  Selected  %s\n' "$(selection_summary)"
@@ -5934,6 +6345,7 @@ show_status() {
       android) executable="$APPS/android/sdk/emulator/emulator"; version="$APPS/android/.installed-version" ;;
       flutter) executable="$APPS/flutter/sdk/bin/flutter"; version="$APPS/flutter/.installed-version" ;;
       hermes) executable="$APPS/hermes/current/source/.hermes/bin/hermes"; version="$APPS/hermes/.installed-version" ;;
+      cua) executable="$APPS/cua/current/cua-driver"; version="$APPS/cua/.installed-version" ;;
       hermes-desktop) executable="$APPS/hermes/current/desktop"; version="$APPS/hermes/.installed-version" ;;
       codex-desktop|claude-desktop|openmausbot|chatgpt) executable="$APPS/$program/current/AppRun"; version="$APPS/$program/.installed-version" ;;
     esac
@@ -5945,6 +6357,7 @@ show_status() {
         android) android_ready || state='needs setup' ;;
         flutter) flutter_ready || state='needs setup' ;;
         hermes) hermes_ready || state='needs setup' ;;
+        cua) cua_ready || state='needs setup' ;;
         hermes-desktop) hermes_desktop_ready || state='needs setup' ;;
         codex-desktop|claude-desktop|openmausbot|chatgpt) ai_desktop_ready "$program" || state='needs setup' ;;
       esac
@@ -5952,9 +6365,11 @@ show_status() {
     version=$(cat "$version" 2>/dev/null || printf '%s' '-')
     printf '  %-26s %-9s %-12s %s\n' "$(label "$program")" "$choice" "$state" "$version"
     if selected "$program"; then
-      command=$(command -v "$program" 2>/dev/null || true)
-      if [ "$command" != "$BIN_DIR/$program" ]; then
-        printf '    Command: %s (managed wrapper: %s/%s)\n' "${command:-not in PATH}" "$(pretty "$BIN_DIR")" "$program"
+      wrapper=$program
+      [ "$program" != cua ] || wrapper=cua-driver
+      command=$(command -v "$wrapper" 2>/dev/null || true)
+      if [ "$command" != "$BIN_DIR/$wrapper" ]; then
+        printf '    Command: %s (managed wrapper: %s/%s)\n' "${command:-not in PATH}" "$(pretty "$BIN_DIR")" "$wrapper"
       fi
     fi
   done
@@ -6108,6 +6523,10 @@ main() {
 
     claude|cc|claude-code)
       open_app claude "$@"
+      ;;
+
+    cua|cua-driver)
+      open_app cua "$@"
       ;;
 
     hermes|hermes-agent)

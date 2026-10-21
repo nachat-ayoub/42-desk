@@ -7,10 +7,10 @@
 
 It installs your choice of **VS Code, Brave, Codex CLI, Claude Code, Android 11 Google Play,
 Flutter, Hermes Desktop, Hermes Agent (CLI), ChatGPT Desktop (official), Codex Desktop,
-Claude Desktop, and OpenMausBot** inside
+Claude Desktop, OpenMausBot, and Cua Driver** inside
 `goinfre`. It migrates existing editor/browser profiles, creates familiar
 `code`, `brave`, `codex`, `claude`, `android`, `flutter`, `dart`, `hermes`,
-`hermes-desktop`, `chatgpt`, `codex-desktop`, `claude-desktop`, and `openmausbot` commands for the selected programs.
+`hermes-desktop`, `chatgpt`, `codex-desktop`, `claude-desktop`, `openmausbot`, and `cua-driver` commands for the selected programs.
 Choose what to open with `desk`, and update installed programs with `desk update`.
 Shell startup also checks your saved installation selection for updates.
 
@@ -21,6 +21,7 @@ Shell startup also checks your saved installation selection for updates.
 - Native VS Code
 - Native Brave
 - Native Codex CLI and Claude Code (no Node.js/npm required)
+- Cua Driver for controlling your current Linux desktop through Codex MCP tools
 - Official ChatGPT Desktop, including Codex, from OpenAI's signed Linux repository
 - Separate Codex Desktop and Claude Desktop entries using community Linux packages
 - Official Nous Research Hermes Desktop, built for Linux with its managed agent backend
@@ -87,7 +88,7 @@ From this checkout on the new machine, run:
 ./desk install all
 ```
 
-This installs all twelve programs without opening them, saves your selection, and refreshes
+This installs all thirteen programs without opening them, saves your selection, and refreshes
 the managed `desk` command. Then run `desk` to choose what to open, or `desk android`
 to start Android. Repeating setup reuses completed Android downloads and existing
 device data. Network access is needed for missing packages, and Linux KVM access is
@@ -118,7 +119,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.15.0) and `desk st`.
+the installed command. Verify with `desk --version` (2.16.0) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -145,6 +146,7 @@ Choose your programs
    [ ] Hermes Desktop (official)
    [ ] OpenMausBot
    [ ] ChatGPT Desktop (official, includes Codex)
+   [ ] Cua Driver (Codex computer use)
 
 Up/Down or j/k: move   Space: toggle
 Enter: install   a: all   n: none   Esc/q: cancel
@@ -324,6 +326,83 @@ or directly:
 ```bash
 brave https://github.com
 ```
+
+### Cua Driver with Codex
+
+[Cua Driver](https://github.com/trycua/cua/tree/main/libs/cua-driver) gives Codex
+computer-use tools for your current Linux desktop. Select **Cua Driver (Codex
+computer use)** in the installation checklist, or run:
+
+```bash
+desk install cua                # Alias: desk install cua-driver
+desk cua doctor                 # Check this graphical desktop session
+codex mcp get cua-driver --json  # Check Codex's registration
+```
+
+Fully quit and restart Codex CLI or ChatGPT Desktop after setup. In a new Codex
+conversation, try: **"Use Cua Driver to open Calculator, calculate 6 × 7, and
+verify that it displays 42."** The driver uses Codex's existing model; it does
+not need a separate Cua cloud account or model API key.
+
+Setup installs the official stable Linux x86-64 or ARM64 release and its matching
+agent skill pack from `trycua/cua` GitHub Releases. Every archive is checked
+against the release's `SHA256SUMS`. Published Sigstore bundles are required;
+when `cosign` is installed, their signatures and publisher workflow identity are
+verified too. The extracted binary and shared-library dependencies are checked
+before activation. Failed updates keep the working release and earlier releases
+remain available in goinfre.
+
+Desk reuses an existing managed Codex CLI, a bundled Codex/ChatGPT Desktop
+backend, or a Codex executable on PATH. If none exists, it installs Codex CLI as
+a dependency. It uses Codex's native MCP commands to add `cua-driver` as a stdio
+server launching `desk cua mcp`, and adds desktop environment forwarding to that
+new server's table. Only desktop/session settings and named Cua preferences are
+forwarded; DISPLAY and session-bus addresses are inherited at startup rather
+than saved during installation. Existing server settings, account data, model
+choices and approval settings are preserved. If a different `cua-driver` server
+already exists, desk leaves it in place and reports that fact.
+
+Codex configuration defaults to `~/.codex/config.toml`; a custom `CODEX_HOME` is
+respected. Before changes, an existing configuration is backed up privately in
+`$GOINFRE/data/cua/config-backups`. The official skill is linked at
+`~/.agents/skills/cua-driver`, while existing user-owned skills remain intact.
+MCP startup never downloads or configures software and its stdout contains only
+the driver's protocol messages.
+
+```text
+$GOINFRE/apps/cua/releases/<version>-linux-<arch>/  Driver, helper files, skill pack
+$GOINFRE/apps/cua/current                         Active release
+$GOINFRE/cache/cua/                               Cache and temporary files
+$GOINFRE/data/cua/driver/                         Driver state and recordings
+$GOINFRE/data/cua/config-backups/                 Codex configuration backups
+```
+
+`CUA_DRIVER_RS_HOME` / `CUA_DRIVER_HOME` and custom telemetry-state directories
+are respected. A new `~/.cua-driver` is linked to the managed state directory;
+an existing directory or custom link is preserved. `desk storage` reports its
+physical location. Keep backups of important recordings or settings because
+campus goinfre storage may be cleared.
+
+Run diagnostics from a terminal inside your logged-in graphical session. X11
+needs its display/authentication and accessibility services; Wayland behavior
+depends on your compositor and its portal/helper support. The release includes
+the upstream GNOME helper files but desk does not install or enable shell
+extensions, change device permissions, or grant access to existing logged-in
+browser profiles. `desk cua doctor` reports missing session capabilities.
+Installation and MCP discovery can succeed on a headless machine while GUI
+actions still require those desktop capabilities.
+
+```bash
+desk cua setup           # Retry registration after correcting Codex configuration
+desk update cua          # Update through desk; no automatic driver self-updates
+cua-driver list-tools    # Native Cua Driver commands also work
+desk open cua            # Run diagnostics through the launch selection flow
+```
+
+Updates are postponed while the managed driver is running. Deselecting Cua
+leaves its installation and registration intact. `desk clean` removes the driver,
+its caches, and only desk's own MCP/skill registration, keeping driver state,
+configuration backups and other Codex settings. Reinstalling reconnects it.
 
 ### Flutter SDK and Dart
 
@@ -1418,7 +1497,7 @@ State:
 
 `42-desk` creates user desktop entries for selected VS Code, Brave, Android,
 ChatGPT Desktop, Codex Desktop, Claude Desktop, Hermes Desktop, and OpenMausBot installations. Codex CLI,
-Claude Code, Flutter, and Hermes Agent (CLI) run in the terminal and have no desktop launchers.
+Claude Code, Flutter, Cua Driver diagnostics, and Hermes Agent (CLI) run in the terminal and have no desktop launchers.
 
 The Brave entry appears as:
 
@@ -1450,6 +1529,7 @@ saved preferences, installed-only updates, Flutter SDK checksum/revision validat
 Flutter target setup, interactive Android licences, portable JDK/Ninja integrity, and browser selection,
 current/newer version handling,
 installation integrity, cache routing, terminal argument/input/exit handling,
+Cua archive/signature validation, Codex MCP setup and desktop environment forwarding,
 and Brave launch behavior:
 
 ```bash
