@@ -6,10 +6,11 @@
 42 / 1337 Linux machines.
 
 It installs your choice of **VS Code, Brave, Codex CLI, Claude Code, Android 11 Google Play,
-Flutter, Hermes Desktop, Hermes Agent (CLI), Codex Desktop, Claude Desktop, and OpenMausBot** inside
+Flutter, Hermes Desktop, Hermes Agent (CLI), ChatGPT Desktop (official), Codex Desktop,
+Claude Desktop, and OpenMausBot** inside
 `goinfre`. It migrates existing editor/browser profiles, creates familiar
 `code`, `brave`, `codex`, `claude`, `android`, `flutter`, `dart`, `hermes`,
-`hermes-desktop`, `codex-desktop`, `claude-desktop`, and `openmausbot` commands for the selected programs.
+`hermes-desktop`, `chatgpt`, `codex-desktop`, `claude-desktop`, and `openmausbot` commands for the selected programs.
 Choose what to open with `desk`, and update installed programs with `desk update`.
 Shell startup also checks your saved installation selection for updates.
 
@@ -20,6 +21,7 @@ Shell startup also checks your saved installation selection for updates.
 - Native VS Code
 - Native Brave
 - Native Codex CLI and Claude Code (no Node.js/npm required)
+- Official ChatGPT Desktop, including Codex, from OpenAI's signed Linux repository
 - Separate Codex Desktop and Claude Desktop entries using community Linux packages
 - Official Nous Research Hermes Desktop, built for Linux with its managed agent backend
 - OpenMausBot desktop from its official Linux AppImage, with Codex/Claude command discovery
@@ -85,7 +87,7 @@ From this checkout on the new machine, run:
 ./desk install all
 ```
 
-This installs all eleven programs without opening them, saves your selection, and refreshes
+This installs all twelve programs without opening them, saves your selection, and refreshes
 the managed `desk` command. Then run `desk` to choose what to open, or `desk android`
 to start Android. Repeating setup reuses completed Android downloads and existing
 device data. Network access is needed for missing packages, and Linux KVM access is
@@ -116,7 +118,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.14.6) and `desk st`.
+the installed command. Verify with `desk --version` (2.15.0) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -142,6 +144,7 @@ Choose your programs
    [ ] Claude Desktop (community Linux port)
    [ ] Hermes Desktop (official)
    [ ] OpenMausBot
+   [ ] ChatGPT Desktop (official, includes Codex)
 
 Up/Down or j/k: move   Space: toggle
 Enter: install   a: all   n: none   Esc/q: cancel
@@ -501,7 +504,58 @@ history in their existing locations, including a custom `CLAUDE_CONFIG_DIR`.
 Updates are managed by `desk update`; the managed launcher disables Claude's separate
 automatic updater to keep installation files in `goinfre`.
 
-### Codex Desktop and Claude Desktop on Linux
+### Official ChatGPT Desktop (includes Codex)
+
+The current official Linux application is a separate choice from the older
+community Codex port. To switch your installed/open selection, fully quit Codex
+Desktop and its tray icon, then run from your checkout:
+
+```bash
+git pull && ./desk install chatgpt && desk open chatgpt
+```
+
+`desk open chatgpt` remembers the official app as your launch choice for future
+`desk` runs. The former community installation remains available as
+`codex-desktop`; its menu still says **community**. The two applications share
+the existing `~/.config/Codex` profile and `CODEX_HOME`. Desk refuses to open one
+while the other is running, so a launcher cannot hand off to the older app.
+
+```bash
+desk chatgpt                 # Open the official application
+desk update chatgpt          # Check the official signed repository for updates
+desk chatgpt --version       # Installed official application version
+desk chatgpt --doctor        # Paths, package receipt, versions and library checks
+```
+
+Packages come from [OpenAI's official download site](https://chatgpt.com/download/)
+and `https://persistent.oaistatic.com/codex-app-prod/linux/deb`. Desk pins OpenAI's
+reviewed signing-key fingerprint, verifies the signed APT `InRelease`, verifies
+the architecture's uncompressed `Packages` index, and checks the versioned
+`.deb` size and SHA-256 before extraction. Key or signature changes, stale index
+checksums, tampered packages, and unexpected layouts stop installation.
+
+The `.deb` is extracted into `$GOINFRE/apps/chatgpt`; its vendor binaries,
+JavaScript, and native modules are kept intact. No maintainer scripts run, and
+desk does not change APT repositories or system AppArmor rules. A small `AppRun`
+symlink invokes the vendor's launcher. Versions are staged before an atomic
+activation, and older releases remain until `desk clean`. Cache, shaders and
+temporary files use `$GOINFRE/cache/chatgpt`. Existing Codex data retains its
+current paths and goinfre links. `desk clean` keeps the shared persistent data.
+
+Setup needs `curl`, `python3`, `gpg`, `dpkg-deb`, `ldd`, and at least 4 GB free.
+It supports x86-64 and ARM64 and checks the main executable and its shared
+libraries before activation. OpenAI currently documents Ubuntu 24.04/26.04,
+Debian 13, Fedora, and Arch as supported distributions; older systems can still
+lack required libraries. The system must permit Chromium's unprivileged user
+namespace sandbox. If school policy blocks it, an administrator must provide
+appropriate support; desk does not disable the sandbox. Optional features can
+need further libraries from the package's dependency list.
+
+This uses the official app's current interface and bundled Codex backend rather
+than applying the legacy community-port patches. Model availability still
+depends on the app, your account, and OpenAI's rollout.
+
+### Community Codex Desktop and Claude Desktop on Linux
 
 ```bash
 desk install                  # Add desktop apps through the checkbox picker
@@ -1169,7 +1223,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.14.6
+42-desk 2.15.0
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI
@@ -1313,7 +1367,7 @@ State:
 ## Desktop launchers
 
 `42-desk` creates user desktop entries for selected VS Code, Brave, Android,
-Codex Desktop, Claude Desktop, Hermes Desktop, and OpenMausBot installations. Codex CLI,
+ChatGPT Desktop, Codex Desktop, Claude Desktop, Hermes Desktop, and OpenMausBot installations. Codex CLI,
 Claude Code, Flutter, and Hermes Agent (CLI) run in the terminal and have no desktop launchers.
 
 The Brave entry appears as:

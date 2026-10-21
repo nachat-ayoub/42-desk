@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.14.6"
+VERSION="2.15.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -42,7 +42,7 @@ PROGRAMS_FILE="$STATE_DIR/programs"
 OPEN_PROGRAMS_FILE="$STATE_DIR/open-programs"
 # Existing installations keep their original two-program selection.
 PROGRAMS=(code brave)
-ALL_PROGRAMS=(code brave codex claude android flutter hermes codex-desktop claude-desktop hermes-desktop openmausbot)
+ALL_PROGRAMS=(code brave codex claude android flutter hermes codex-desktop claude-desktop hermes-desktop openmausbot chatgpt)
 PICKER_PROGRAMS=("${ALL_PROGRAMS[@]}")
 
 AUTO_CHECK_SECONDS=$((12 * 60 * 60))
@@ -192,6 +192,7 @@ label() {
     hermes) echo "Hermes Agent (CLI)" ;;
     hermes-desktop) echo "Hermes Desktop" ;;
     openmausbot) echo "OpenMausBot" ;;
+    chatgpt) echo "ChatGPT Desktop (official)" ;;
     codex-desktop) echo "Codex Desktop (community)" ;;
     claude-desktop) echo "Claude Desktop (community)" ;;
     *) echo "$1" ;;
@@ -229,6 +230,7 @@ usage() {
   printf '  desk hermes [ARGS]   run Hermes Agent in this terminal\n'
   printf '  desk hermes-desktop open the official Hermes Desktop app\n'
   printf '  desk openmausbot     open OpenMausBot desktop\n'
+  printf '  desk chatgpt         open official ChatGPT Desktop (includes Codex)\n'
   printf '  desk codex-desktop   open the community Linux Codex desktop app\n'
   printf '  desk codex-desktop --doctor  diagnose desktop/database startup\n'
   printf '  desk codex-desktop --repair-runtime  fix incompatible native SQLite\n'
@@ -284,6 +286,7 @@ normalize_programs() {
         cc|claude-code) word=claude ;;
         emulator) word=android ;;
         hermes-agent) word=hermes ;;
+        chatgpt-desktop) word=chatgpt ;;
         all) requested+=("${ALL_PROGRAMS[@]}"); continue ;;
         none) none=1 ;;
       esac
@@ -379,7 +382,7 @@ import tty
 title, action = sys.argv[1:3]
 separator = sys.argv.index("--", 3)
 labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play", "flutter": "Flutter SDK", "hermes": "Hermes Agent (CLI)", "hermes-desktop": "Hermes Desktop (official)",
-          "codex-desktop": "Codex Desktop (community Linux port)", "claude-desktop": "Claude Desktop (community Linux port)", "openmausbot": "OpenMausBot",
+          "codex-desktop": "Codex Desktop (community Linux port)", "claude-desktop": "Claude Desktop (community Linux port)", "openmausbot": "OpenMausBot", "chatgpt": "ChatGPT Desktop (official, includes Codex)",
           "android-toolchain": "Android app builds", "web-toolchain": "Web (Brave / Chrome)", "linux-toolchain": "Linux desktop"}
 programs = [(name, labels[name]) for name in sys.argv[3:separator]]
 chosen = set(sys.argv[separator + 1:]).intersection(name for name, _ in programs)
@@ -525,6 +528,7 @@ show_next_steps() {
   selected hermes-desktop && printf '  Hermes Desktop  hermes-desktop\n'
   selected openmausbot && printf '  OpenMausBot     openmausbot  (choose a logged-in agent in Settings → Engines)\n'
   selected codex-desktop && printf '  Codex Desktop   codex-desktop\n'
+  selected chatgpt && printf '  ChatGPT Desktop chatgpt\n'
   selected claude-desktop && printf '  Claude Desktop  claude-desktop\n'
   printf '\nOpen programs: desk   |   Update installed programs: desk update\n'
   printf '\nChange programs anytime: desk install\n'
@@ -1822,7 +1826,7 @@ write_launchers() {
   if selected hermes; then write_wrapper hermes hermes || return 1; fi
   if selected hermes-desktop; then write_hermes_desktop_launcher || return 1; fi
   local desktop_app
-  for desktop_app in codex-desktop claude-desktop openmausbot; do
+  for desktop_app in codex-desktop claude-desktop openmausbot chatgpt; do
     if selected "$desktop_app"; then write_ai_desktop_launcher "$desktop_app" || return 1; fi
   done
   if selected android; then write_wrapper android android || return 1; fi
@@ -2990,6 +2994,9 @@ launch_flutter() (
 
 ai_desktop_ready() {
   [ -x "$APPS/$1/current/AppRun" ] && [ -f "$APPS/$1/.desk-release.json" ] || return 1
+  if [ "$1" = chatgpt ]; then
+    [ -x "$APPS/chatgpt/current/ChatGPT" ] && [ -x "$APPS/chatgpt/current/resources/codex" ] && [ -f "$APPS/chatgpt/current/resources/app.asar" ] || return 1
+  fi
   if [ "$1" = openmausbot ]; then
     [ -x "$APPS/$1/current/openmausbot" ] && [ -f "$APPS/$1/current/resources/app.asar" ] || return 1
   fi
@@ -3020,6 +3027,7 @@ write_ai_desktop_launcher() {
   local app=$1
   local comment='Community Linux desktop package managed by 42-desk'
   if [ "$app" = openmausbot ]; then comment='OpenMausBot desktop chat and agents managed by 42-desk'; fi
+  if [ "$app" = chatgpt ]; then comment='Official ChatGPT Desktop and Codex by OpenAI'; fi
   write_wrapper "$app" "$app" || return 1
   mkdir -p "$DATA_DIR/applications" || return 1
   cat > "$DATA_DIR/applications/$app-desk.desktop" <<EOF
@@ -3038,6 +3046,7 @@ EOF
 install_ai_desktop() (
   local app=$1
   if [ "$(uname -s)" != Linux ]; then fail 'Desktop packages currently support Linux only.'; return 1; fi
+  if [ "$app" = chatgpt ]; then install_official_chatgpt; return $?; fi
   if [ "$app" = openmausbot ] && [ "$(uname -m)" != x86_64 ]; then
     fail 'OpenMausBot currently publishes Linux packages for x86_64 only.'
     return 1
@@ -3221,6 +3230,209 @@ AI_DESKTOP_INSTALLER
   local result=$?
   [ "$result" = 0 ] || return "$result"
   if [ "$app" = codex-desktop ]; then prepare_codex_desktop_compatibility || return 1; fi
+)
+
+
+install_official_chatgpt() (
+  if ai_desktop_ready chatgpt && [ "${UPDATE_ONLY:-0}" != 1 ]; then
+    ok 'Official ChatGPT Desktop is ready; use desk update chatgpt to check for updates.'
+    return 0
+  fi
+  if ai_desktop_running chatgpt; then
+    warn 'ChatGPT Desktop is running. Quit it, including its tray icon, before updating.'
+    ai_desktop_ready chatgpt
+    return $?
+  fi
+  local tool
+  for tool in gpg dpkg-deb ldd; do
+    command -v "$tool" >/dev/null 2>&1 || { fail "Official ChatGPT setup requires $tool. Ask an administrator to install its system package."; return 1; }
+  done
+  info 'Checking official ChatGPT Desktop from OpenAI'
+  python3 - "$APPS/chatgpt" "$(uname -m)" "${UPDATE_ONLY:-0}" <<'OFFICIAL_CHATGPT'
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+base, machine, update = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3] == '1'
+root = 'https://persistent.oaistatic.com/codex-app-prod/linux'
+# The reviewed key published by OpenAI's official Linux installer. Verify the
+# fingerprint before importing it into a disposable, private GnuPG home.
+fingerprint = '3BFA0E4AE8B8CC16A2D9BA684A3B4A566C4660E4'
+key_url = root + '/arch/26.1016.51333/repository-signing-key.gpg'
+current, marker = base / 'current', base / '.desk-release.json'
+
+def fetch(url, target):
+    subprocess.run(['curl', '-fL', '--proto', '=https', '--proto-redir', '=https',
+                    '--tlsv1.2', '--retry', '2', '--connect-timeout', '15',
+                    '--speed-limit', '1024', '--speed-time', '60', '--max-time', '900',
+                    url, '-o', str(target)], check=True)
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            value.update(block)
+    return value.hexdigest()
+
+def gpg(home, *arguments):
+    return subprocess.run(['gpg', '--no-options', '--batch', '--no-autostart',
+                           '--homedir', str(home), '--no-auto-key-retrieve',
+                           '--no-auto-key-import', *arguments], check=True,
+                          capture_output=True, text=True, timeout=30)
+
+def fields(text):
+    result = {}
+    for line in text.splitlines():
+        if line and not line[0].isspace() and ': ' in line:
+            key, value = line.split(': ', 1)
+            if key in result:
+                raise RuntimeError('Duplicate package metadata field: ' + key)
+            result[key] = value
+    return result
+
+def main():
+    arch = {'x86_64': 'amd64', 'aarch64': 'arm64'}.get(machine)
+    if not arch:
+        raise RuntimeError('Official ChatGPT supports Linux x86_64 and ARM64 only')
+    base.mkdir(parents=True, exist_ok=True)
+    releases = base / 'releases'
+    releases.mkdir(exist_ok=True)
+    previous = json.loads(marker.read_text()) if marker.is_file() else {}
+    if current.exists() or current.is_symlink():
+        if not current.is_symlink() or previous.get('provider') != 'OpenAI':
+            raise RuntimeError('Unrecognized existing installation; inspect ' + str(current))
+    with tempfile.TemporaryDirectory(prefix='official-', dir=base) as temporary:
+        stage = Path(temporary)
+        signed, release, index, key = (stage / name for name in ('InRelease', 'Release', 'Packages', 'signing-key.gpg'))
+        try:
+            fetch(root + '/deb/dists/stable/InRelease', signed)
+        except subprocess.CalledProcessError:
+            if update and os.access(current / 'ChatGPT', os.X_OK) and previous.get('provider') == 'OpenAI':
+                print('Cannot check OpenAI updates; keeping the installed official app.', file=sys.stderr)
+                return
+            raise
+        fetch(key_url, key)
+        home = stage / 'gnupg'
+        home.mkdir(mode=0o700)
+        shown = gpg(home, '--with-colons', '--show-keys', str(key)).stdout
+        fingerprints, primary = [], False
+        for line in shown.splitlines():
+            parts = line.split(':')
+            if parts[0] == 'pub':
+                primary = True
+            elif parts[0] == 'sub':
+                primary = False
+            elif parts[0] == 'fpr' and primary:
+                fingerprints.append(parts[9])
+                primary = False
+        if fingerprints != [fingerprint]:
+            raise RuntimeError('OpenAI signing-key fingerprint mismatch; existing installation kept')
+        gpg(home, '--import', str(key))
+        # --decrypt verifies this clearsigned document and writes only its
+        # authenticated plaintext. Never parse unverified InRelease contents.
+        gpg(home, '--output', str(release), '--decrypt', str(signed))
+        relative = f'main/binary-{arch}/Packages'
+        section, expected = False, None
+        for line in release.read_text().splitlines():
+            if line == 'SHA256:':
+                section = True
+                continue
+            if line and not line[0].isspace():
+                section = False
+            parts = line.split()
+            if section and len(parts) == 3 and parts[2] == relative:
+                if expected is not None or not re.fullmatch(r'[a-f0-9]{64}', parts[0]):
+                    raise RuntimeError('Invalid signed repository index digest')
+                expected = (parts[0], int(parts[1]))
+        if expected is None:
+            raise RuntimeError('Signed repository has no SHA-256 index for ' + arch)
+        fetch(root + '/deb/dists/stable/' + relative, index)
+        if (digest(index), index.stat().st_size) != expected:
+            raise RuntimeError('Repository index checksum mismatch; retry after the OpenAI mirror finishes updating')
+        candidates = [fields(part) for part in index.read_text().strip().split('\n\n')]
+        candidates = [entry for entry in candidates if entry.get('Package') == 'chatgpt' and entry.get('Architecture') == arch]
+        if len(candidates) != 1:
+            raise RuntimeError('No unique official ChatGPT package in the signed repository')
+        package = candidates[0]
+        version = package['Version']
+        if not re.fullmatch(r'[0-9]+(?:\.[0-9]+){2}', version):
+            raise RuntimeError('Unsupported official package version')
+        filename = f'pool/main/c/chatgpt/chatgpt_{version}_{arch}.deb'
+        if package['Filename'] != filename or not re.fullmatch(r'[a-f0-9]{64}', package['SHA256']):
+            raise RuntimeError('Unexpected official package URL or digest')
+        numbers = lambda value: tuple(map(int, value.split('.')))
+        if previous.get('version') and numbers(previous['version']) > numbers(version):
+            print('Keeping newer installed official ChatGPT ' + previous['version'], flush=True)
+            return
+        if previous.get('version') == version and os.access(current / 'ChatGPT', os.X_OK) and (current / 'resources/app.asar').is_file():
+            print('Official ChatGPT ' + version + ' is already current.', flush=True)
+            return
+        required = max(4 * 1024**3, int(package['Size']) + int(package['Installed-Size']) * 1024 + 512 * 1024**2)
+        if shutil.disk_usage(base).free < required:
+            raise RuntimeError('Keep at least 4 GB free in goinfre for the official package and extraction')
+        archive = stage / 'chatgpt.deb'
+        print('Downloading official ChatGPT ' + version + ' from OpenAI', flush=True)
+        fetch(root + '/deb/' + filename, archive)
+        if archive.stat().st_size != int(package['Size']) or digest(archive) != package['SHA256']:
+            raise RuntimeError('Official package checksum mismatch; existing installation kept')
+        metadata = subprocess.run(['dpkg-deb', '--field', str(archive)], capture_output=True, text=True, check=True, timeout=30)
+        control = fields(metadata.stdout)
+        if any(control.get(name) != value for name, value in (('Package', 'chatgpt'), ('Version', version), ('Architecture', arch))):
+            raise RuntimeError('Official package control metadata does not match the signed index')
+        payload = stage / 'payload'
+        # Extraction only: no root, maintainer scripts, APT changes, or system
+        # AppArmor changes. Keep vendor binaries, JavaScript and native modules intact.
+        subprocess.run(['dpkg-deb', '--extract', str(archive), str(payload)], check=True, timeout=240)
+        content = payload / 'usr/lib/chatgpt'
+        if not all((content / path).is_file() for path in ('ChatGPT', 'codex-launcher', 'resources/app.asar', 'resources/codex')):
+            raise RuntimeError('Unsupported official package layout; existing installation kept')
+        if not os.access(content / 'ChatGPT', os.X_OK) or not os.access(content / 'resources/codex', os.X_OK):
+            raise RuntimeError('Official desktop/backend executables are missing')
+        probe_home = stage / 'probe-home'
+        probe_home.mkdir()
+        environment = dict(os.environ, HOME=str(probe_home), CODEX_HOME=str(probe_home / '.codex'),
+                           XDG_CONFIG_HOME=str(probe_home / 'config'), XDG_CACHE_HOME=str(probe_home / 'cache'))
+        result = subprocess.run([str(content / 'ChatGPT'), '--version'], env=environment,
+                                capture_output=True, text=True, timeout=20)
+        if result.returncode != 0 or result.stdout.strip() != version:
+            raise RuntimeError('Official app cannot run on this system: ' + (result.stderr or result.stdout).strip()[:1400])
+        libraries = subprocess.run(['ldd', str(content / 'ChatGPT')], capture_output=True, text=True, timeout=20)
+        if libraries.returncode != 0 or 'not found' in libraries.stdout:
+            raise RuntimeError('Official app needs system libraries: ' + (libraries.stdout + libraries.stderr).strip()[:2000])
+        app_run = content / 'AppRun'
+        if app_run.exists() or app_run.is_symlink():
+            raise RuntimeError('Unexpected AppRun in official package')
+        app_run.symlink_to('codex-launcher')
+        receipt = {'provider': 'OpenAI', 'version': version, 'architecture': arch,
+                   'sha256': package['SHA256'], 'signing_fingerprint': fingerprint,
+                   'url': root + '/deb/' + filename}
+        (content / '.desk-package.json').write_text(json.dumps(receipt) + '\n')
+        destination = releases / f'{version}-{arch}'
+        if destination.exists():
+            raise RuntimeError('Release directory already exists; inspect ' + str(destination))
+        content.rename(destination)
+        link = base / 'current.new'
+        link.unlink(missing_ok=True)
+        link.symlink_to(destination.relative_to(base))
+        link.replace(current)
+        marker.write_text(json.dumps(receipt) + '\n')
+        (base / '.installed-version').write_text(version + '\n')
+        print('Installed official ChatGPT ' + version + '. Nothing opened automatically.', flush=True)
+
+try:
+    main()
+except subprocess.CalledProcessError as error:
+    sys.exit('Official ChatGPT setup failed: ' + str(error) + '\n' + str(error.stderr or '')[:1800])
+except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+    sys.exit('Official ChatGPT setup failed: ' + str(error))
+OFFICIAL_CHATGPT
 )
 
 
@@ -3487,8 +3699,8 @@ try:
             raise RuntimeError(f'Cannot migrate {source}: destination exists or source is not a directory. Move/merge it manually first.')
     if missing_managed or any(source.exists() for source, _ in pending):
         processes = subprocess.check_output(['ps', '-u', str(os.getuid()), '-o', 'comm='], text=True)
-        if any(name.strip().lower().startswith('codex') for name in processes.splitlines()):
-            raise RuntimeError('Close Codex CLI and Codex Desktop before migrating their data.')
+        if any(name.strip().lower().startswith(('codex', 'chatgpt')) for name in processes.splitlines()):
+            raise RuntimeError('Close Codex CLI and Codex Desktop/ChatGPT Desktop before migrating their data.')
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     root.chmod(0o700)
     for source, target in missing_managed:
@@ -3736,13 +3948,13 @@ VIDEO_DOWNLOAD
 prepare_ai_desktop_unlocked() {
   install_ai_desktop "$1" || return 1
   ai_desktop_ready "$1" || return 1
-  if [ "$1" = codex-desktop ]; then prepare_codex_desktop_storage || return 1; fi
+  if [ "$1" = codex-desktop ] || [ "$1" = chatgpt ]; then prepare_codex_desktop_storage || return 1; fi
   write_ai_desktop_launcher "$1"
 }
 
 
 codex_desktop_doctor() {
-  if ai_desktop_running codex-desktop; then
+  if ai_desktop_running codex-desktop || ai_desktop_running chatgpt; then
     fail 'Quit Codex Desktop, including its tray icon, then retry --doctor.'
     return 1
   fi
@@ -3927,6 +4139,53 @@ CODEX_DESKTOP_DOCTOR
 }
 
 
+official_chatgpt_doctor() {
+  python3 - "$APPS/chatgpt" "$GOINFRE/cache/chatgpt/tmp" "$CONF_DIR/Codex" <<'CHATGPT_DOCTOR'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+base, cache, profile = map(Path, sys.argv[1:])
+marker = base / '.desk-release.json'
+print('Official ChatGPT Desktop diagnostics', flush=True)
+if not marker.is_file():
+    sys.exit('Not installed. Use desk install chatgpt.')
+receipt = json.loads(marker.read_text())
+for key in ('provider', 'version', 'architecture', 'url', 'sha256', 'signing_fingerprint'):
+    print(key + ':', receipt.get(key, 'missing'))
+print('Desktop profile:', profile, '->', profile.resolve())
+print('CODEX_HOME:', os.environ.get('CODEX_HOME', str(Path.home() / '.codex')))
+healthy = not (profile.is_symlink() and not profile.is_dir())
+cache.mkdir(parents=True, exist_ok=True)
+with tempfile.TemporaryDirectory(prefix='doctor-', dir=cache) as temporary:
+    environment = dict(os.environ, HOME=temporary, CODEX_HOME=temporary + '/.codex',
+                       XDG_CONFIG_HOME=temporary + '/config', XDG_CACHE_HOME=temporary + '/cache')
+    Path(environment['CODEX_HOME']).mkdir(mode=0o700)
+    for title, path in [('Desktop', base / 'current/ChatGPT'), ('Bundled backend', base / 'current/resources/codex')]:
+        try:
+            result = subprocess.run([str(path), '--version'], env=environment, capture_output=True, text=True, timeout=20)
+            print(title + ':', (result.stdout + result.stderr).strip(), flush=True)
+            healthy = result.returncode == 0 and healthy
+        except (OSError, subprocess.SubprocessError) as error:
+            print(title + ':', error)
+            healthy = False
+try:
+    result = subprocess.run(['ldd', str(base / 'current/ChatGPT')], capture_output=True, text=True, timeout=20)
+    missing = [line.strip() for line in result.stdout.splitlines() if 'not found' in line]
+    print('Main system libraries:', '\n'.join(missing) if missing else 'resolved' if result.returncode == 0 else result.stderr.strip())
+    healthy = result.returncode == 0 and not missing and healthy
+except (OSError, subprocess.SubprocessError) as error:
+    print('System libraries:', error)
+    healthy = False
+print('No GUI was opened. Existing profiles and databases were left in place.')
+sys.exit(0 if healthy else 1)
+CHATGPT_DOCTOR
+}
+
+
 launch_ai_desktop_unlocked() (
   local app=$1
   shift
@@ -3940,6 +4199,23 @@ launch_ai_desktop_unlocked() (
     prepare_codex_desktop_runtime
     return $?
   fi
+  if [ "$app" = chatgpt ] && [ "${1:-}" = --version ]; then
+    cat "$APPS/chatgpt/.installed-version"
+    return $?
+  fi
+  if [ "$app" = chatgpt ] && [ "${1:-}" = --doctor ]; then
+    if [ "$#" != 1 ]; then fail 'Use desk chatgpt --doctor without other arguments.'; return 2; fi
+    official_chatgpt_doctor
+    return $?
+  fi
+  if [ "$app" = chatgpt ] && ai_desktop_running codex-desktop; then
+    fail 'Quit the community Codex Desktop, including its tray icon, before opening official ChatGPT. They share your profile.'
+    return 1
+  fi
+  if [ "$app" = codex-desktop ] && ai_desktop_running chatgpt; then
+    fail 'Quit official ChatGPT Desktop before opening the community Codex Desktop. They share your profile.'
+    return 1
+  fi
   if ! ai_desktop_ready "$app"; then
     if [ "${PREPARE_ON_LAUNCH:-1}" != 1 ]; then fail "Run desk install $app first."; return 1; fi
     prepare_ai_desktop_unlocked "$app" || return 1
@@ -3948,10 +4224,11 @@ launch_ai_desktop_unlocked() (
     prepare_codex_desktop_compatibility || return 1
     prepare_codex_desktop_storage || return 1
   fi
+  if [ "$app" = chatgpt ]; then prepare_codex_desktop_storage || return 1; fi
   local cache="$GOINFRE/cache/$app"
   local executable="$APPS/$app/current/AppRun"
   export APPDIR="$APPS/$app/current"
-  if [ "$app" = codex-desktop ] && [ -z "${CODEX_CLI_PATH:-}" ]; then
+  if { [ "$app" = codex-desktop ] || [ "$app" = chatgpt ]; } && [ -z "${CODEX_CLI_PATH:-}" ]; then
     # Pair Desktop with the backend distributed in the same verified package.
     # A PATH wrapper may resolve to a separately updated terminal CLI.
     if [ -x "$APPDIR/resources/bin/codex" ]; then
@@ -4473,7 +4750,7 @@ prepare_all() {
       flutter) prepare_flutter || failed=1 ;;
       hermes) prepare_hermes || failed=1 ;;
       hermes-desktop) with_lock_wait hermes prepare_hermes_desktop_unlocked || failed=1 ;;
-      codex-desktop|claude-desktop|openmausbot) with_lock_wait "$program" prepare_ai_desktop_unlocked "$program" || failed=1 ;;
+      codex-desktop|claude-desktop|openmausbot|chatgpt) with_lock_wait "$program" prepare_ai_desktop_unlocked "$program" || failed=1 ;;
     esac
   done
 
@@ -4494,7 +4771,7 @@ program_executable() {
     flutter) printf '%s/flutter/sdk/bin/flutter\n' "$APPS" ;;
     hermes) printf '%s/hermes/current/source/.hermes/bin/hermes\n' "$APPS" ;;
     hermes-desktop) printf '%s/hermes/current/desktop\n' "$APPS" ;;
-    codex-desktop|claude-desktop|openmausbot) printf '%s/%s/current/AppRun\n' "$APPS" "$1" ;;
+    codex-desktop|claude-desktop|openmausbot|chatgpt) printf '%s/%s/current/AppRun\n' "$APPS" "$1" ;;
     *) return 2 ;;
   esac
 }
@@ -4506,7 +4783,7 @@ program_installed() {
   if [ "$1" = flutter ]; then flutter_ready; return $?; fi
   if [ "$1" = hermes ]; then hermes_ready; return $?; fi
   if [ "$1" = hermes-desktop ]; then hermes_desktop_ready; return $?; fi
-  case "$1" in codex-desktop|claude-desktop|openmausbot) ai_desktop_ready "$1"; return $? ;; esac
+  case "$1" in codex-desktop|claude-desktop|openmausbot|chatgpt) ai_desktop_ready "$1"; return $? ;; esac
   executable=$(program_executable "$1") || return $?
   [ -x "$executable" ]
 }
@@ -4521,7 +4798,7 @@ program_ready() {
     flutter) flutter_ready ;;
     hermes) hermes_ready ;;
     hermes-desktop) hermes_desktop_ready ;;
-    codex-desktop|claude-desktop|openmausbot) ai_desktop_ready "$1" ;;
+    codex-desktop|claude-desktop|openmausbot|chatgpt) ai_desktop_ready "$1" ;;
     *) return 2 ;;
   esac
 }
@@ -4570,7 +4847,7 @@ update_installed_programs() {
       flutter) with_lock_wait flutter install_flutter || failed=1 ;;
       hermes) with_lock_wait hermes install_hermes || failed=1 ;;
       hermes-desktop) with_lock_wait hermes install_hermes hermes-desktop || failed=1 ;;
-      codex-desktop|claude-desktop|openmausbot) with_lock_wait "$program" install_ai_desktop "$program" || failed=1 ;;
+      codex-desktop|claude-desktop|openmausbot|chatgpt) with_lock_wait "$program" install_ai_desktop "$program" || failed=1 ;;
     esac
   done
   if [ "$failed" = 0 ]; then
@@ -4721,6 +4998,10 @@ open_app() {
       with_lock_wait hermes launch_hermes_desktop_unlocked "$@"
       ;;
 
+    chatgpt)
+      with_lock_wait codex-desktop with_lock_wait chatgpt launch_ai_desktop_unlocked chatgpt "$@"
+      ;;
+
     codex-desktop|claude-desktop|openmausbot)
       with_lock_wait "$name" launch_ai_desktop_unlocked "$name" "$@"
       ;;
@@ -4860,7 +5141,7 @@ open_programs() {
   # Start desktop apps first, before a single AI tool takes over this terminal.
   for program in "${PROGRAMS[@]}"; do
     case "$program" in
-      code|brave|android|codex-desktop|claude-desktop|hermes-desktop|openmausbot) open_app "$program" || failed=1 ;;
+      code|brave|android|codex-desktop|claude-desktop|hermes-desktop|openmausbot|chatgpt) open_app "$program" || failed=1 ;;
     esac
   done
   [ "$failed" = 0 ] || return "$failed"
@@ -4976,7 +5257,7 @@ shell_prepare_component() {
       if with_lock_try hermes prepare_hermes_desktop_unlocked; then rc=0; else rc=$?; fi
       ;;
 
-    codex-desktop|claude-desktop|openmausbot)
+    codex-desktop|claude-desktop|openmausbot|chatgpt)
       if ai_desktop_ready "$name"; then return 0; fi
       if with_lock_try "$name" prepare_ai_desktop_unlocked "$name"; then rc=0; else rc=$?; fi
       ;;
@@ -5139,7 +5420,7 @@ native_apps_running() {
   fi
 
   local desktop_app
-  for desktop_app in codex-desktop claude-desktop openmausbot; do
+  for desktop_app in codex-desktop claude-desktop openmausbot chatgpt; do
     if ai_desktop_running "$desktop_app"; then
       warn "$(label "$desktop_app") is running. Close it first."
       running=1
@@ -5210,9 +5491,11 @@ clean_reset_unlocked() {
     "$APPS/codex-desktop" \
     "$APPS/claude-desktop" \
     "$APPS/openmausbot" \
+    "$APPS/chatgpt" \
     "$GOINFRE/cache/codex-desktop" \
     "$GOINFRE/cache/claude-desktop" \
     "$GOINFRE/cache/openmausbot" \
+    "$GOINFRE/cache/chatgpt" \
     "$GOINFRE/cache/vscode-vsix"
 
   rm -rf "$APPS/flutter/sdk"
@@ -5244,7 +5527,7 @@ clean_reset_unlocked() {
   if managed_wrapper "$BIN_DIR/hermes-desktop"; then rm -f "$BIN_DIR/hermes-desktop"; fi
   rm -f "$DATA_DIR/applications/hermes-desktop-desk.desktop"
   local desktop_app
-  for desktop_app in codex-desktop claude-desktop openmausbot; do
+  for desktop_app in codex-desktop claude-desktop openmausbot chatgpt; do
     if managed_wrapper "$BIN_DIR/$desktop_app"; then rm -f "$BIN_DIR/$desktop_app"; fi
     rm -f "$DATA_DIR/applications/$desktop_app-desk.desktop"
   done
@@ -5391,7 +5674,7 @@ clean_reset() {
     if lock_try_acquire hermes; then held_hermes=1; else rc=1; fi
   fi
 
-  for extra_lock in codex-desktop claude-desktop openmausbot; do
+  for extra_lock in codex-desktop claude-desktop openmausbot chatgpt; do
     [ "$rc" = 0 ] || break
     if lock_try_acquire "$extra_lock"; then extra_locks+=("$extra_lock"); else rc=1; fi
   done
@@ -5453,7 +5736,7 @@ show_status() {
       flutter) executable="$APPS/flutter/sdk/bin/flutter"; version="$APPS/flutter/.installed-version" ;;
       hermes) executable="$APPS/hermes/current/source/.hermes/bin/hermes"; version="$APPS/hermes/.installed-version" ;;
       hermes-desktop) executable="$APPS/hermes/current/desktop"; version="$APPS/hermes/.installed-version" ;;
-      codex-desktop|claude-desktop|openmausbot) executable="$APPS/$program/current/AppRun"; version="$APPS/$program/.installed-version" ;;
+      codex-desktop|claude-desktop|openmausbot|chatgpt) executable="$APPS/$program/current/AppRun"; version="$APPS/$program/.installed-version" ;;
     esac
     if [ -x "$executable" ]; then
       state=installed
@@ -5464,7 +5747,7 @@ show_status() {
         flutter) flutter_ready || state='needs setup' ;;
         hermes) hermes_ready || state='needs setup' ;;
         hermes-desktop) hermes_desktop_ready || state='needs setup' ;;
-        codex-desktop|claude-desktop|openmausbot) ai_desktop_ready "$program" || state='needs setup' ;;
+        codex-desktop|claude-desktop|openmausbot|chatgpt) ai_desktop_ready "$program" || state='needs setup' ;;
       esac
     fi
     version=$(cat "$version" 2>/dev/null || printf '%s' '-')
@@ -5617,8 +5900,12 @@ main() {
       open_app hermes-desktop "$@"
       ;;
 
-    codex-desktop|claude-desktop|openmausbot)
+    codex-desktop|claude-desktop|openmausbot|chatgpt)
       open_app "$cmd" "$@"
+      ;;
+
+    chatgpt-desktop)
+      open_app chatgpt "$@"
       ;;
 
     android|emulator)
