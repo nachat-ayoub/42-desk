@@ -176,3 +176,16 @@ except sqlite3.Error as error:
         self.assertIn('unavailable for this package layout', result.stdout)
         self.assertFalse((self.root / 'probes.jsonl').exists())
 
+    def test_dangling_electron_profile_is_reported_without_recreating_it(self):
+        self.create_database(self.database)
+        profile = self.home / '.config/Codex'
+        profile.parent.mkdir(parents=True, exist_ok=True)
+        target = self.storage / 'data/codex-desktop/config/Codex'
+        profile.symlink_to(target, target_is_directory=True)
+        result = self.doctor(check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(target), result.stdout)
+        self.assertIn('cannot create its SingletonLock', result.stdout)
+        self.assertFalse(target.exists())
+        self.assertTrue(profile.is_symlink())
+

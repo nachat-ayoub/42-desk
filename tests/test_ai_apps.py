@@ -195,6 +195,38 @@ PY
         self.assertEqual((profile / 'history').read_text(), 'preserve')
         self.assertEqual((target / 'history').read_text(), 'other history')
 
+    def test_launch_recreates_missing_managed_profile_before_creating_singleton_lock(self):
+        self.write_executable(self.bin / 'ps', '#!/bin/sh\necho bash\n')
+        self.install('codex-desktop')
+        profile = self.home / '.config/Codex'
+        destination = profile.resolve()
+        destination.rmdir()
+        self.assertTrue(profile.is_symlink())
+        self.write_executable(self.storage / 'apps/codex-desktop/current/AppRun', '''#!/usr/bin/env python3
+from pathlib import Path
+import os
+profile = Path.home() / '.config/Codex'
+(profile / 'SingletonLock').symlink_to('fixture-host-' + str(os.getpid()))
+''')
+        result = self.run_desk('codex-desktop')
+        self.assertIn('Recreated missing desk-managed directory', result.stdout)
+        self.assertTrue(profile.is_symlink())
+        self.assertEqual(profile.resolve(), destination)
+        self.assertTrue((destination / 'SingletonLock').is_symlink())
+
+    def test_immediate_desktop_failure_is_reported_with_log_and_exit_status(self):
+        self.install('claude-desktop')
+        self.write_executable(self.storage / 'apps/claude-desktop/current/AppRun', '''#!/bin/sh
+echo 'Failed to create profile/SingletonLock: No such file or directory' >&2
+exit 23
+''')
+        result = self.run_desk('claude-desktop', check=False)
+        self.assertEqual(result.returncode, 23)
+        self.assertIn('exited during startup', result.stderr)
+        self.assertIn('Failed to create profile/SingletonLock', result.stderr)
+        self.assertIn('open-claude-desktop.log', result.stderr)
+        self.assertIn('SingletonLock', (self.state / 'open-claude-desktop.log').read_text())
+
     def test_codex_data_migration_respects_custom_codex_home_and_symlinks(self):
         custom = self.root / 'custom codex data'
         custom.mkdir()

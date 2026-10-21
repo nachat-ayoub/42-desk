@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.14.4"
+VERSION="2.14.5"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -3397,16 +3397,28 @@ if not override:
 try:
     # Refuse conflicts before moving any directories. Custom symlinks and an
     # explicit CODEX_HOME belong to the user and are left alone.
+    missing_managed = []
+    for source, target in pairs:
+        if source.is_symlink() and not source.is_dir():
+            if source.resolve() == target and not target.exists() and not target.is_symlink():
+                missing_managed.append((source, target))
+            else:
+                raise RuntimeError(f'Profile/data link {source} points to a missing or invalid directory: {source.resolve()}. Restore the target or correct the link before opening Codex; existing links and data were left in place.')
     pending = [(source, target) for source, target in pairs if not source.is_symlink()]
     for source, target in pending:
         if source.exists() and (not source.is_dir() or (target.exists() or target.is_symlink())):
             raise RuntimeError(f'Cannot migrate {source}: destination exists or source is not a directory. Move/merge it manually first.')
-    if any(source.exists() for source, _ in pending):
+    if missing_managed or any(source.exists() for source, _ in pending):
         processes = subprocess.check_output(['ps', '-u', str(os.getuid()), '-o', 'comm='], text=True)
         if any(name.strip().lower().startswith('codex') for name in processes.splitlines()):
             raise RuntimeError('Close Codex CLI and Codex Desktop before migrating their data.')
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     root.chmod(0o700)
+    for source, target in missing_managed:
+        target.mkdir(parents=True, mode=0o700)
+        print(f'Recreated missing desk-managed directory: {target}', flush=True)
+    if missing_managed:
+        print('Missing directories are empty; restore a backup if their previous contents are needed. Existing data and links were preserved.', file=sys.stderr)
     for source, target in pending:
         source.parent.mkdir(parents=True, exist_ok=True)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -3671,6 +3683,8 @@ import tempfile
 
 base, scratch = map(Path, sys.argv[1:])
 home = Path.home()
+profiles = [Path(os.environ.get('XDG_CONFIG_HOME', str(home / '.config'))) / name
+            for name in ('Codex', 'codex')]
 codex_home = Path(os.environ.get('CODEX_HOME', str(home / '.codex'))).expanduser().absolute()
 database = codex_home / 'sqlite/codex.db'
 migrated = base.parent.parent / 'data/codex-desktop/codex-home'
@@ -3699,6 +3713,11 @@ def describe(path):
 
 for path in (codex_home, migrated, database.parent, database, Path(str(database) + '-wal'), Path(str(database) + '-shm')):
     describe(path)
+print('Electron profile directories:')
+for path in profiles:
+    describe(path)
+    if path.is_symlink() and not path.is_dir():
+        print('    Profile link target is unavailable; Codex cannot create its SingletonLock here.')
 parent = database.parent
 while not parent.exists() and parent != parent.parent:
     parent = parent.parent
@@ -3806,9 +3825,10 @@ def probe(label, directory, source=None):
 
 scratch.mkdir(parents=True, exist_ok=True)
 healthy = ((not (database.exists() or database.is_symlink()) or database.is_file()) and
-           not (codex_home.is_symlink() and not codex_home.exists()))
+           not (codex_home.is_symlink() and not codex_home.exists()) and
+           all(not path.is_symlink() or path.is_dir() for path in profiles))
 if database.is_file():
-    healthy = probe('Current database (disposable copy)', scratch, database)
+    healthy = probe('Current database (disposable copy)', scratch, database) and healthy
 backups = database.parent / 'db-backups'
 if backups.is_dir():
     candidates = [(path.stat().st_mtime, path) for path in backups.glob('*/codex.db') if path.is_file()]
@@ -3876,9 +3896,40 @@ launch_ai_desktop_unlocked() (
     exec "$APPS/$app/current/AppRun" "$@"
   fi
   info "Opening $(label "$app") (log: $(pretty "$STATE_DIR/open-$app.log"))"
-  start_detached_process "$executable" --disable-setuid-sandbox --disk-cache-dir="$cache/chromium" "$@" \
-    </dev/null >"$STATE_DIR/open-$app.log" 2>&1 &
+  start_logged_desktop "$(label "$app")" "$STATE_DIR/open-$app.log" \
+    "$executable" --disable-setuid-sandbox --disk-cache-dir="$cache/chromium" "$@"
 )
+
+
+# Detach GUI processes while surfacing errors that occur during startup. A
+# zero exit can mean the launcher handed off to an already-running instance.
+start_logged_desktop() {
+  python3 - "$@" <<'DESKTOP_START'
+from pathlib import Path
+import subprocess
+import sys
+
+name, filename, *command = sys.argv[1:]
+log = Path(filename)
+try:
+    with log.open('wb') as output:
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output,
+                                   stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        status = process.wait(timeout=1.5)
+    except subprocess.TimeoutExpired:
+        sys.exit(0)
+    if status != 0:
+        print(f'{name} exited during startup (status {status}). Log: {log}', file=sys.stderr)
+        with log.open('rb') as stream:
+            stream.seek(max(0, log.stat().st_size - 8192))
+            lines = stream.read().decode('utf-8', errors='replace').splitlines()
+        print('\n'.join(lines[-20:]), file=sys.stderr)
+        sys.exit(status if status > 0 else 128 - status)
+except OSError as error:
+    sys.exit(f'{name} could not start: {error}. Log: {log}')
+DESKTOP_START
+}
 
 
 # -------------------------------------------------------------------

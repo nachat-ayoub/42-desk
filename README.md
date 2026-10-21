@@ -116,7 +116,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.14.4) and `desk st`.
+the installed command. Verify with `desk --version` (2.14.5) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -554,6 +554,13 @@ the data folders directly in goinfre. `desk clean` keeps these persistent data
 folders and their links. **Goinfre is local and may be cleared by your school;
 back up your Codex data separately.**
 
+If a desk-managed directory is missing but its compatibility symlink remains,
+installation and launch recreate that directory and report it. Existing folders,
+files, and links are preserved. Recreated folders are empty; this does not recover
+their previous settings or history. Broken custom symlinks and links to files
+stop startup with the affected path so they can be corrected without overwriting
+user-managed locations. Close Codex Desktop and Codex CLI before this repair.
+
 Claude Desktop keeps its usual profile location. Close other copies of the
 same desktop application before using desk's copy.
 
@@ -568,6 +575,9 @@ additional system virtualization components.
 Setup creates user menu entries and `~/.local/bin` wrappers without opening the
 applications. Launch from `desk`'s picker or the direct commands. Launch logs are
 `~/.config/desk/open-codex-desktop.log` and `open-claude-desktop.log`.
+Desk checks for immediate launcher failures for 1.5 seconds and prints the
+exit status and recent log output if the process fails. A launcher can hand off
+to an existing instance, and a window appearing is not guaranteed by this check.
 Codex also writes detailed application logs under
 `${XDG_STATE_HOME:-$HOME/.local/state}/codex/logs/`; the launcher log can be empty.
 Use `claude-desktop --version` or `claude-desktop --doctor` for foreground diagnostics.
@@ -588,7 +598,8 @@ git pull
 The foreground report shows the installed build, effective `CODEX_HOME`, physical
 profile location, database files, free space, quota output when available, and
 the most recently modified application logs. It also shows the migrated goinfre
-home and dangling symlink targets without running a migration. It reports a missing database
+home, Electron profile directories, and dangling symlink targets without running
+a migration or recreating missing directories. It reports a missing database
 instead of trying to open a nonexistent file. `CODEX_SQLITE_HOME` configures the
 app-server database; this inspected desktop build uses `CODEX_HOME/sqlite/codex.db`
 for its separate desktop database.
@@ -1126,7 +1137,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.14.4
+42-desk 2.14.5
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI
