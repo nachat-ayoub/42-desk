@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.14.5"
+VERSION="2.14.6"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -3044,7 +3044,7 @@ install_ai_desktop() (
   fi
   if ai_desktop_ready "$app" && [ "${UPDATE_ONLY:-0}" != 1 ]; then
     ok "$(label "$app") is ready; use desk update $app to check for updates."
-    if [ "$app" = codex-desktop ]; then prepare_codex_desktop_runtime || return 1; fi
+    if [ "$app" = codex-desktop ]; then prepare_codex_desktop_compatibility || return 1; fi
     return 0
   fi
   if ai_desktop_running "$app"; then
@@ -3220,8 +3220,85 @@ except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError)
 AI_DESKTOP_INSTALLER
   local result=$?
   [ "$result" = 0 ] || return "$result"
-  if [ "$app" = codex-desktop ]; then prepare_codex_desktop_runtime || return 1; fi
+  if [ "$app" = codex-desktop ]; then prepare_codex_desktop_compatibility || return 1; fi
 )
+
+
+prepare_codex_desktop_compatibility() {
+  prepare_codex_desktop_runtime || return 1
+  prepare_codex_desktop_chat || return 1
+}
+
+
+# This inspected desktop build assumes every local host has its app-tools MCP
+# transport. Linux ports can lack that transport; use the existing dynamic-tool
+# route in that case, without adding or disabling anything in user config.toml.
+prepare_codex_desktop_chat() {
+  local running=0
+  if ai_desktop_running codex-desktop; then running=1; fi
+  python3 - "$APPS/codex-desktop" "$running" <<'CODEX_CHAT'
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import sys
+import tempfile
+
+base, running = Path(sys.argv[1]), sys.argv[2] == '1'
+version_file = base / '.installed-version'
+version = version_file.read_text().strip() if version_file.is_file() else ''
+if version != 'v26.820.60940':
+    # Do not rewrite unknown newer releases. Their upstream fix/layout may differ.
+    sys.exit(0)
+old = 'let e=db(this.params.hostId);if(!s?.skipDynamicTools||e){let t=await this.requestDynamicToolsForThreadStart'
+new = ('let e=db(this.params.hostId);/*desk-codex-app-transport-v1*/'
+       'if(e){let t=await this.params.requestClient.sendRequest(`config/read`,{includeLayers:!1,cwd:c.cwd??n});'
+       'let r=t?.config?.mcp_servers?.codex_app;e=typeof r?.command===`string`||typeof r?.url===`string`;}'
+       'if(!s?.skipDynamicTools||e){let t=await this.requestDynamicToolsForThreadStart')
+try:
+    assets = base / 'current/resources/app/webview/assets'
+    candidates = []
+    for path in assets.glob('app-initial-*.js'):
+        text = path.read_text()
+        if old in text or new in text:
+            candidates.append((path, text))
+    if len(candidates) != 1:
+        raise RuntimeError('Unsupported chat renderer for this desktop version; original files kept.')
+    path, text = candidates[0]
+    if text.count(new) == 1 and old not in text:
+        sys.exit(0)
+    if text.count(old) != 1 or new in text:
+        raise RuntimeError('Ambiguous chat renderer; original files kept.')
+    if running:
+        raise RuntimeError('Quit Codex Desktop, including its tray icon, before preparing chat compatibility.')
+    before = path.read_bytes()
+    replacement = text.replace(old, new).encode()
+    backup = path.with_name(path.name + '.desk-original')
+    if backup.exists():
+        if backup.read_bytes() != before:
+            raise RuntimeError('Unrecognized existing renderer backup; original files kept.')
+    else:
+        shutil.copy2(path, backup)
+    with tempfile.NamedTemporaryFile(prefix='.desk-chat-', dir=path.parent, delete=False) as output:
+        staged = Path(output.name)
+        try:
+            output.write(replacement)
+            output.flush()
+            os.fsync(output.fileno())
+            staged.chmod(path.stat().st_mode & 0o777)
+            staged.replace(path)
+        finally:
+            staged.unlink(missing_ok=True)
+    (base / '.desk-chat-compat.json').write_text(json.dumps({
+        'patch': 'codex-app-transport-v1', 'version': version,
+        'renderer': path.name, 'original_sha256': hashlib.sha256(before).hexdigest(),
+        'patched_sha256': hashlib.sha256(replacement).hexdigest()}) + '\n')
+    print('Prepared Codex Desktop chat compatibility.', flush=True)
+except (OSError, RuntimeError) as error:
+    sys.exit('Codex chat compatibility failed: ' + str(error))
+CODEX_CHAT
+}
 
 
 # Check native code without opening user databases. Some community AppImages
@@ -3691,6 +3768,13 @@ migrated = base.parent.parent / 'data/codex-desktop/codex-home'
 print('Codex Desktop database diagnostics', flush=True)
 print('Installed version:', (base / '.installed-version').read_text().strip()
       if (base / '.installed-version').is_file() else 'not installed')
+print('Chat compatibility receipt:', base / '.desk-chat-compat.json',
+      '(present)' if (base / '.desk-chat-compat.json').is_file() else '(absent)')
+backend = os.environ.get('CODEX_CLI_PATH')
+if not backend:
+    backend = next((str(path) for path in (base / 'current/resources/bin/codex', base / 'current/resources/codex')
+                    if os.access(path, os.X_OK)), shutil.which('codex') or 'not found')
+print('Desktop backend preference:', backend)
 print('CODEX_HOME:', codex_home)
 print('Physical home:', codex_home.resolve())
 print('Desk migrated home:', migrated)
@@ -3861,12 +3945,21 @@ launch_ai_desktop_unlocked() (
     prepare_ai_desktop_unlocked "$app" || return 1
   fi
   if [ "$app" = codex-desktop ]; then
-    prepare_codex_desktop_runtime || return 1
+    prepare_codex_desktop_compatibility || return 1
     prepare_codex_desktop_storage || return 1
   fi
   local cache="$GOINFRE/cache/$app"
   local executable="$APPS/$app/current/AppRun"
   export APPDIR="$APPS/$app/current"
+  if [ "$app" = codex-desktop ] && [ -z "${CODEX_CLI_PATH:-}" ]; then
+    # Pair Desktop with the backend distributed in the same verified package.
+    # A PATH wrapper may resolve to a separately updated terminal CLI.
+    if [ -x "$APPDIR/resources/bin/codex" ]; then
+      export CODEX_CLI_PATH="$APPDIR/resources/bin/codex"
+    elif [ -x "$APPDIR/resources/codex" ]; then
+      export CODEX_CLI_PATH="$APPDIR/resources/codex"
+    fi
+  fi
   if [ "$app" = claude-desktop ]; then export CLAUDE_FORCE_SANDBOX="${CLAUDE_FORCE_SANDBOX:-1}"; fi
   export XDG_CACHE_HOME="$cache/xdg" TMPDIR="$cache/tmp" TMP="$cache/tmp" TEMP="$cache/tmp"
   export MESA_SHADER_CACHE_DIR="$cache/mesa" __GL_SHADER_DISK_CACHE_PATH="$cache/nvidia"

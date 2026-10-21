@@ -116,7 +116,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.14.5) and `desk st`.
+the installed command. Verify with `desk --version` (2.14.6) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -518,6 +518,10 @@ Desk installs community Linux packages of the desktop applications:
 | Codex Desktop | [cuongducle/codex-linux](https://github.com/cuongducle/codex-linux) |
 | Claude Desktop | [aaddrick/claude-desktop-debian](https://github.com/aaddrick/claude-desktop-debian) |
 
+Codex Desktop prefers the backend binary bundled in the same desktop package,
+so a separately updated `codex` terminal command does not change its backend.
+Set `CODEX_CLI_PATH` explicitly to use another backend; desk preserves that choice.
+
 The Claude package repackages the official Claude Desktop application. It is not
 a graphical wrapper around the Claude Code CLI. Community package versions can
 lag the application vendor's other platforms; desk follows each project's latest
@@ -638,6 +642,34 @@ Installation, update checks, and launches perform the same native check and
 repair when needed. Healthy installations need no additional downloads. Run
 `./desk install codex-desktop` to refresh the installed `desk` command and launchers
 after updating a checkout.
+
+#### Error creating chat: invalid transport in `mcp_servers.codex_app`
+
+Desktop `26.820.60940` can send `mcp_servers.codex_app.enabled_tools` for a local
+host even when no app-tools command or URL exists. The backend then rejects
+the incomplete MCP configuration before creating the chat. This can occur with
+both the bundled CLI 0.149.1 and the newer terminal CLI 0.163.0.
+
+Desk applies a guarded compatibility patch to that inspected desktop version.
+Before selecting the app-tools MCP route, the renderer reads the effective
+configuration for the project's directory. A configured command or URL keeps
+the existing MCP route. Otherwise it uses Desktop's existing dynamic-tool route
+without generating an incomplete MCP override. Invalid existing configuration
+still reports its original error. User `config.toml`, other MCP servers, sign-ins,
+and conversations are preserved.
+
+The dynamic-tool fallback does not provide the app-only automation and
+thread-management tools that require a working app-tools MCP transport.
+The original renderer is kept beside it as `app-initial-*.js.desk-original`, with
+a receipt at `$GOINFRE/apps/codex-desktop/.desk-chat-compat.json`. Changed layouts
+of this known build are rejected; unknown newer releases are left unchanged.
+`--doctor` reports the receipt and backend preference without launching a backend.
+
+Fully quit Codex Desktop, including its tray icon, then run from your checkout:
+
+```bash
+git pull && ./desk install codex-desktop && desk codex-desktop
+```
 
 ### OpenMausBot
 
@@ -1137,7 +1169,7 @@ desk st
 Example:
 
 ```text
-42-desk 2.14.5
+42-desk 2.14.6
 
   Storage   /goinfre/you
   Selected  VS Code, Codex CLI

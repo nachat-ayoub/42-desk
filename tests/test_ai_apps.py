@@ -13,6 +13,17 @@ from urllib.parse import quote
 import test_programs as helpers
 
 
+CHAT_RENDERER = '''
+const hwe='mcp_servers.codex_app.enabled_tools';
+const mwe=new Set(['automation_update','create_thread','send_message_to_thread','fork_thread','handoff_thread']);
+function db(host){return host==='local';}
+function fwe(e){return e.filter(e=>e.type!=='function'||!mwe.has(e.name)).map(e=>e.type==='namespace'&&e.name==='codex_app'?{...e,tools:e.tools.filter(({name:e})=>!mwe.has(e))}:e);}
+async function prepare(c,s,n){let e=db(this.params.hostId);if(!s?.skipDynamicTools||e){let t=await this.requestDynamicToolsForThreadStart(s.dynamicToolFeatureOverrides==null?a:{...a,...s.dynamicToolFeatureOverrides},l,s?.mode??`default`,s?.threadStartKind??`default`,s?.realtimeVoiceDynamicTools);c.dynamicTools=void 0,s?.skipDynamicTools||(c.dynamicTools=e?[]:fwe(t)),e&&(c.config={...c.config,[hwe]:t.flatMap(e=>e.type===`namespace`?e.tools.map(({name:e})=>e):[e.name])})}return c;}
+const a={},l='default';
+module.exports={prepare};
+'''
+
+
 class AppFixtures(unittest.TestCase):
     write_executable = staticmethod(helpers.ProgramTests.write_executable)
     write_platform = helpers.ProgramTests.write_platform
@@ -24,6 +35,7 @@ class AppFixtures(unittest.TestCase):
     def setUp(self):
         helpers.ProgramTests.setUp(self)
         self.env.pop('HERMES_HOME', None)
+        self.env.pop('CODEX_CLI_PATH', None)
 
     def read_record(self, name):
         path = self.root / name
@@ -76,7 +88,7 @@ root = pathlib.Path(os.environ['DESK_FIXTURE'])
 (root / 'APP-launch.json').write_text(json.dumps({
     'args': sys.argv[1:], 'env': {name: os.environ.get(name) for name in (
         'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'TMPDIR', 'MESA_SHADER_CACHE_DIR', 'APPDIR', 'CLAUDE_FORCE_SANDBOX',
-        'PATH', 'OMB_DATA_DIR', 'LD_LIBRARY_PATH')}
+        'PATH', 'OMB_DATA_DIR', 'LD_LIBRARY_PATH', 'CODEX_CLI_PATH')}
 }))
 '''.replace('APP-launch.json', app + '-launch.json')
         script = '''#!/bin/sh
@@ -107,8 +119,11 @@ if APP_NAME == 'codex-desktop':
     native = root / 'resources/app/node_modules/better-sqlite3/build/Release/better_sqlite3.node'
     native.parent.mkdir(parents=True)
     native.write_bytes(b'compatible fixture module')
+    renderer = root / 'resources/app/webview/assets/app-initial-fixture.js'
+    renderer.parent.mkdir(parents=True)
+    renderer.write_text(CHAT_SOURCE)
 PY
-'''.replace('LAUNCHER', repr(launcher)).replace('APP_NAME', repr(app))
+'''.replace('LAUNCHER', repr(launcher)).replace('APP_NAME', repr(app)).replace('CHAT_SOURCE', repr(CHAT_RENDERER))
         if fail_extract:
             script = '#!/bin/sh\nexit 1\n'
         artifact.write_text(script)
@@ -213,6 +228,26 @@ profile = Path.home() / '.config/Codex'
         self.assertTrue(profile.is_symlink())
         self.assertEqual(profile.resolve(), destination)
         self.assertTrue((destination / 'SingletonLock').is_symlink())
+
+    def test_codex_desktop_prefers_bundled_backend_over_terminal_path_wrapper(self):
+        self.install('codex-desktop')
+        bundled = self.storage / 'apps/codex-desktop/current/resources/bin/codex'
+        self.write_executable(bundled, '#!/bin/sh\nexit 0\n')
+        self.write_executable(self.bin / 'codex', '#!/bin/sh\nexit 99\n')
+        self.run_desk('codex-desktop')
+        record = self.read_record('codex-desktop-launch.json')
+        self.assertEqual(record['env']['CODEX_CLI_PATH'], str(bundled))
+        self.assertNotIn('CODEX_CLI_PATH', self.env)
+
+    def test_codex_desktop_preserves_explicit_backend_override(self):
+        self.install('codex-desktop')
+        bundled = self.storage / 'apps/codex-desktop/current/resources/bin/codex'
+        custom = self.bin / 'custom-codex'
+        for path in (bundled, custom):
+            self.write_executable(path, '#!/bin/sh\nexit 0\n')
+        self.env['CODEX_CLI_PATH'] = str(custom)
+        self.run_desk('codex-desktop')
+        self.assertEqual(self.read_record('codex-desktop-launch.json')['env']['CODEX_CLI_PATH'], str(custom))
 
     def test_immediate_desktop_failure_is_reported_with_log_and_exit_status(self):
         self.install('claude-desktop')
