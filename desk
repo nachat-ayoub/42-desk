@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.16.0"
+VERSION="2.17.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -42,7 +42,7 @@ PROGRAMS_FILE="$STATE_DIR/programs"
 OPEN_PROGRAMS_FILE="$STATE_DIR/open-programs"
 # Existing installations keep their original two-program selection.
 PROGRAMS=(code brave)
-ALL_PROGRAMS=(code brave codex claude android flutter hermes codex-desktop claude-desktop hermes-desktop openmausbot chatgpt cua)
+ALL_PROGRAMS=(code brave codex claude android flutter hermes codex-desktop claude-desktop hermes-desktop openmausbot chatgpt cua android-tablet)
 PICKER_PROGRAMS=("${ALL_PROGRAMS[@]}")
 
 AUTO_CHECK_SECONDS=$((12 * 60 * 60))
@@ -189,6 +189,7 @@ label() {
     cua) echo "Cua Driver (Codex computer use)" ;;
     claude) echo "Claude Code" ;;
     android) echo "Android 11 Google Play" ;;
+    android-tablet) echo "Android 11 Google Play Tablet" ;;
     flutter) echo "Flutter SDK" ;;
     hermes) echo "Hermes Agent (CLI)" ;;
     hermes-desktop) echo "Hermes Desktop" ;;
@@ -239,6 +240,8 @@ usage() {
   printf '  desk codex-desktop --repair-runtime  fix incompatible native SQLite\n'
   printf '  desk claude-desktop  open the community Linux Claude desktop app\n'
   printf '  desk android [ARGS] open Android 11 Google Play (Pixel 9 display)\n'
+  printf '  desk android-tablet [ARGS] open the Android 11 gaming tablet\n'
+  printf '  desk android-tablet --doctor  check tablet/game compatibility\n'
   printf '  desk flutter [ARGS] run Flutter (includes Dart)\n'
   printf '  desk flutter-setup [TARGETS] prepare Android/web/Linux build tools\n'
   printf '  desk env flutter     print shell exports for project scripts\n'
@@ -290,6 +293,7 @@ normalize_programs() {
         ai) word=codex ;;
         cc|claude-code) word=claude ;;
         emulator) word=android ;;
+        tablet|emulator-tablet) word=android-tablet ;;
         hermes-agent) word=hermes ;;
         cua-driver) word=cua ;;
         chatgpt-desktop) word=chatgpt ;;
@@ -389,6 +393,7 @@ title, action = sys.argv[1:3]
 separator = sys.argv.index("--", 3)
 labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play", "flutter": "Flutter SDK", "hermes": "Hermes Agent (CLI)", "hermes-desktop": "Hermes Desktop (official)",
           "codex-desktop": "Codex Desktop (community Linux port)", "claude-desktop": "Claude Desktop (community Linux port)", "openmausbot": "OpenMausBot", "chatgpt": "ChatGPT Desktop (official, includes Codex)", "cua": "Cua Driver (Codex computer use)",
+          "android-tablet": "Android 11 Google Play Tablet (iPad-like display, games)",
           "android-toolchain": "Android app builds", "web-toolchain": "Web (Brave / Chrome)", "linux-toolchain": "Linux desktop"}
 programs = [(name, labels[name]) for name in sys.argv[3:separator]]
 chosen = set(sys.argv[separator + 1:]).intersection(name for name, _ in programs)
@@ -529,6 +534,7 @@ show_next_steps() {
   selected codex && printf '  Codex CLI  codex   (sign in on first use)\n'
   selected claude && printf '  Claude     claude  (sign in on first use)\n'
   selected android && printf '  Android    android  (Google Play, 1080x2424 display)\n'
+  selected android-tablet && printf '  Tablet     android-tablet  (Google Play, 1640x2360 display, game graphics/audio)\n'
   selected flutter && printf '  Flutter    flutter doctor   |   dart --version\n'
   selected cua && printf '  Cua Driver desk cua doctor   (restart Codex to load its MCP tools)\n'
   selected hermes && printf '  Hermes     hermes setup   (choose your provider on first use)\n'
@@ -2016,6 +2022,7 @@ write_launchers() {
     if selected "$desktop_app"; then write_ai_desktop_launcher "$desktop_app" || return 1; fi
   done
   if selected android; then write_wrapper android android || return 1; fi
+  if selected android-tablet; then write_wrapper android-tablet android-tablet || return 1; fi
   if selected flutter; then
     write_wrapper flutter flutter || return 1
     write_wrapper dart dart || return 1
@@ -2074,6 +2081,19 @@ Comment=Android 11 with Google Play and Pixel 9 display, managed by 42-desk
 Exec="$exec_path" android
 Icon=phone
 Categories=Development;Emulator;
+Terminal=false
+EOF
+  fi
+
+  if selected android-tablet; then
+    cat > "$DATA_DIR/applications/android-tablet-desk.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Android 11 Google Play Tablet
+Comment=Android gaming tablet with an iPad-like display, managed by 42-desk
+Exec="$exec_path" android-tablet
+Icon=tablet
+Categories=Development;Emulator;Game;
 Terminal=false
 EOF
   fi
@@ -2241,6 +2261,31 @@ with_lock_try() {
 # Android 11 Google Play (all persistent and temporary files in goinfre)
 # -------------------------------------------------------------------
 
+android_profile() {
+  case "${1:-android}" in
+    android)
+      ANDROID_DEVICE_NAME=Android_11_Play_Pixel9
+      ANDROID_DEVICE_PORT=5584
+      ANDROID_DEVICE_MARKER=.installed-version
+      ANDROID_DEVICE_LOG_TAG=desk
+      ANDROID_DEVICE_RUN_COMMAND=_android-run
+      ANDROID_DEVICE_WIDTH=1080 ANDROID_DEVICE_HEIGHT=2424 ANDROID_DEVICE_DENSITY=420
+      ANDROID_DEVICE_DISPLAY='Android 11 Google Play - Pixel 9 display'
+      ;;
+    android-tablet)
+      ANDROID_DEVICE_NAME=Android_11_Play_Tablet
+      ANDROID_DEVICE_PORT=5586
+      ANDROID_DEVICE_MARKER=.installed-version-tablet
+      ANDROID_DEVICE_LOG_TAG=tablet
+      ANDROID_DEVICE_RUN_COMMAND=_android-tablet-run
+      ANDROID_DEVICE_WIDTH=1640 ANDROID_DEVICE_HEIGHT=2360 ANDROID_DEVICE_DENSITY=320
+      ANDROID_DEVICE_DISPLAY='Android 11 Google Play - Tablet (iPad-like display)'
+      ;;
+    *) fail 'Unknown Android profile. Choose android or android-tablet.'; return 2 ;;
+  esac
+}
+
+
 android_environment() {
   ANDROID_BASE="$APPS/android"
   export ANDROID_HOME="$ANDROID_BASE/sdk" ANDROID_SDK_ROOT="$ANDROID_BASE/sdk"
@@ -2261,17 +2306,23 @@ android_environment() {
 }
 
 
-android_ready() {
+android_sdk_ready() {
   local root="$APPS/android"
   local entry
   for entry in system.img userdata.img ramdisk.img kernel-ranchu; do
     [ -f "$root/sdk/system-images/android-30/google_apis_playstore/x86_64/$entry" ] || return 1
   done
   [ -x "$root/sdk/emulator/emulator" ] &&
-    [ -x "$root/sdk/platform-tools/adb" ] &&
-    [ -f "$root/avd/Android_11_Play_Pixel9.avd/config.ini" ] &&
-    [ -f "$root/avd/Android_11_Play_Pixel9.ini" ]
+    [ -x "$root/sdk/platform-tools/adb" ]
 }
+
+
+android_ready() (
+  android_profile "${1:-android}" || return $?
+  android_sdk_ready &&
+    [ -f "$APPS/android/avd/$ANDROID_DEVICE_NAME.avd/config.ini" ] &&
+    [ -f "$APPS/android/avd/$ANDROID_DEVICE_NAME.ini" ]
+)
 
 
 android_running() {
@@ -2290,6 +2341,8 @@ PY
 
 
 install_android() (
+  local component=${1:-android}
+  android_profile "$component" || return $?
   if [ "$(uname -s)" != Linux ] || [[ "$(uname -m)" != @(x86_64|amd64) ]]; then
     fail 'Android currently requires an x86_64 Linux workstation.'
     return 1
@@ -2297,25 +2350,31 @@ install_android() (
   android_environment || return 1
   if [ "${ANDROID_TOOLCHAIN_ONLY:-0}" = 1 ]; then
     if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then return 0; fi
-  elif android_ready && [ "${UPDATE_ONLY:-0}" != 1 ]; then
-    printf '11 (API 30, Google Play)\n' > "$ANDROID_BASE/.installed-version"
-    ok 'Android 11 Google Play is ready; reusing the existing SDK and device.'
+  elif android_ready "$component" && [ "${UPDATE_ONLY:-0}" != 1 ]; then
+    printf '11 (API 30, Google Play)\n' > "$ANDROID_BASE/$ANDROID_DEVICE_MARKER"
+    ok "$(label "$component") is ready; reusing the existing SDK and device."
     return 0
   fi
   if [ "${ANDROID_TOOLCHAIN_ONLY:-0}" != 1 ] && android_running; then
-    if android_ready; then
-      warn 'Android emulator is running; keeping its SDK and image. Close all emulators, then run desk update android.'
+    if [ "${UPDATE_ONLY:-0}" != 1 ] && android_sdk_ready; then
+      # Adding a second AVD needs no writes to the live shared SDK/image.
+      :
+    elif android_ready "$component"; then
+      warn "Android emulator is running; keeping its SDK and image. Close all emulators, then run desk update $component."
       return 0
+    else
+      fail 'Close the running Android emulators before finishing Android setup.'
+      return 1
     fi
-    fail 'Close the running Android emulators before finishing Android setup.'
-    return 1
   fi
   if [ "${ANDROID_TOOLCHAIN_ONLY:-0}" = 1 ]; then
     info 'Preparing Android SDK command-line tools'
   else
-    info 'Preparing Android 11 Google Play (1080x2424, 2 GB RAM)'
+    info "Preparing $(label "$component") (${ANDROID_DEVICE_WIDTH}x${ANDROID_DEVICE_HEIGHT}, 2 GB RAM)"
   fi
-  python3 - "$ANDROID_BASE" "${UPDATE_ONLY:-0}" "${ANDROID_TOOLCHAIN_ONLY:-0}" <<'ANDROID_INSTALLER'
+  python3 - "$ANDROID_BASE" "${UPDATE_ONLY:-0}" "${ANDROID_TOOLCHAIN_ONLY:-0}" "$component" \
+    "$ANDROID_DEVICE_NAME" "$ANDROID_DEVICE_WIDTH" "$ANDROID_DEVICE_HEIGHT" "$ANDROID_DEVICE_DENSITY" \
+    "$ANDROID_DEVICE_DISPLAY" "$ANDROID_DEVICE_MARKER" <<'ANDROID_INSTALLER'
 import hashlib
 import json
 import os
@@ -2338,7 +2397,10 @@ downloads = base / 'downloads'
 image_repo = repo + 'sys-img/google_apis_playstore/'
 image_path = 'system-images;android-30;google_apis_playstore;x86_64'
 image_dir = Path('system-images/android-30/google_apis_playstore/x86_64')
-name = 'Android_11_Play_Pixel9'
+component, name = sys.argv[4:6]
+width, height, density = map(int, sys.argv[6:9])
+display_name, version_marker = sys.argv[9:11]
+tablet = component == 'android-tablet'
 
 
 def fetch(url, target):
@@ -2493,80 +2555,188 @@ def main():
     config = device / 'config.ini'
     if not config.exists():
         values = {
-            'AvdId': name, 'avd.ini.displayname': 'Android 11 Google Play - Pixel 9 display',
+            'AvdId': name, 'avd.ini.displayname': display_name,
             'avd.ini.encoding': 'UTF-8', 'abi.type': 'x86_64',
             'image.sysdir.1': str(image_dir) + '/', 'tag.id': 'google_apis_playstore',
             'tag.display': 'Google Play', 'target': 'android-30', 'PlayStore.enabled': 'true',
             'hw.cpu.arch': 'x86_64', 'hw.cpu.ncore': 2, 'hw.ramSize': 2048, 'vm.heapSize': 256,
-            'hw.lcd.width': 1080, 'hw.lcd.height': 2424, 'hw.lcd.density': 420,
+            'hw.lcd.width': width, 'hw.lcd.height': height, 'hw.lcd.density': density,
             'hw.gpu.enabled': 'yes', 'hw.gpu.mode': 'auto', 'hw.keyboard': 'yes', 'hw.mainKeys': 'no',
             'hw.audioInput': 'no', 'hw.camera.back': 'none', 'hw.camera.front': 'none',
             'hw.sdCard': 'no', 'disk.dataPartition.size': '6G', 'disk.cachePartition.size': '64M',
-            'showDeviceFrame': 'no', 'skin.dynamic': 'yes', 'skin.name': '1080x2424',
+            'showDeviceFrame': 'no', 'skin.dynamic': 'yes', 'skin.name': f'{width}x{height}',
             'skin.path': '_no_skin', 'fastboot.forceColdBoot': 'yes', 'fastboot.forceFastBoot': 'no',
         }
+        if tablet:
+            values.update({'disk.dataPartition.size': '16G', 'vm.heapSize': 512,
+                           'hw.audioOutput': 'yes', 'hw.touchScreen': 'multi-touch',
+                           'hw.keyboard.lid': 'no', 'hw.accelerometer': 'yes',
+                           'hw.gyroscope': 'yes', 'hw.initialOrientation': 'portrait'})
         config.write_text(''.join(f'{key}={value}\n' for key, value in values.items()))
     (base / 'avd' / (name + '.ini')).write_text(
         f'avd.ini.encoding=UTF-8\npath={device}\ntarget=android-30\n')
-    (base / '.installed-version').write_text('11 (API 30, Google Play)\n')
-    print('Android 11 Google Play ready. Open with: desk android', flush=True)
+    (base / version_marker).write_text('11 (API 30, Google Play)\n')
+    print(f'Android 11 Google Play ready. Open with: desk {component}', flush=True)
 
 
 try:
     main()
 except (OSError, ValueError, RuntimeError, ET.ParseError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
-    retry = 'desk flutter-setup android' if toolchain_only else 'desk install android'
+    retry = 'desk flutter-setup android' if toolchain_only else 'desk install ' + component
     sys.exit(f'Android setup failed: {error}. Retry with {retry}.')
 ANDROID_INSTALLER
 )
 
 
+android_runtime_settings() {
+  ANDROID_DEVICE_MEMORY=2048 ANDROID_DEVICE_CORES=2
+  ANDROID_DEVICE_GPU="${DESK_ANDROID_GPU:-${ANDROID_LIGHT_GPU:-auto}}"
+  if [ "$1" = android-tablet ]; then
+    ANDROID_DEVICE_MEMORY=${DESK_ANDROID_TABLET_MEMORY:-2048}
+    ANDROID_DEVICE_CORES=${DESK_ANDROID_TABLET_CORES:-2}
+    ANDROID_DEVICE_GPU=${DESK_ANDROID_TABLET_GPU:-${DESK_ANDROID_GPU:-auto}}
+    if ! [[ "$ANDROID_DEVICE_MEMORY" =~ ^[0-9]{4}$ ]] ||
+       ((10#$ANDROID_DEVICE_MEMORY < 2048 || 10#$ANDROID_DEVICE_MEMORY > 8192)); then
+      fail 'DESK_ANDROID_TABLET_MEMORY must be an integer from 2048 to 8192 (MB).'
+      return 2
+    fi
+    if ! [[ "$ANDROID_DEVICE_CORES" =~ ^[1-8]$ ]]; then
+      fail 'DESK_ANDROID_TABLET_CORES must be an integer from 1 to 8.'
+      return 2
+    fi
+  fi
+}
+
+
+android_device_running() {
+  local actual
+  if ! "$ANDROID_HOME/platform-tools/adb" -P 5038 -s "emulator-$ANDROID_DEVICE_PORT" get-state >/dev/null 2>&1; then
+    return 1
+  fi
+  actual=$("$ANDROID_HOME/platform-tools/adb" -P 5038 -s "emulator-$ANDROID_DEVICE_PORT" emu avd name 2>/dev/null | head -n 1 | tr -d '\r') || true
+  if [ "$actual" != "$ANDROID_DEVICE_NAME" ]; then
+    fail "Port $ANDROID_DEVICE_PORT belongs to a different or unidentified emulator. Close it before opening $ANDROID_DEVICE_NAME."
+    return 2
+  fi
+  return 0
+}
+
+
+android_doctor() (
+  local component=${1:-android}
+  android_profile "$component" || return $?
+  android_runtime_settings "$component" || return $?
+  printf '%s diagnostics\n' "$(label "$component")"
+  printf 'Screen: %sx%s at %s dpi\nRAM: %s MB; CPU cores: %s; GPU: %s\n' \
+    "$ANDROID_DEVICE_WIDTH" "$ANDROID_DEVICE_HEIGHT" "$ANDROID_DEVICE_DENSITY" \
+    "$ANDROID_DEVICE_MEMORY" "$ANDROID_DEVICE_CORES" "$ANDROID_DEVICE_GPU"
+  printf 'AVD: %s\nADB: port 5038, emulator-%s\nStorage: %s\n' \
+    "$ANDROID_DEVICE_NAME" "$ANDROID_DEVICE_PORT" "$APPS/android"
+  android_ready "$component" || { fail "Run desk install $component first."; return 1; }
+  android_environment || return 1
+  local result=0
+  "$ANDROID_HOME/emulator/emulator" -accel-check || result=1
+  python3 - "$ANDROID_BASE" <<'ANDROID_SPACE'
+from pathlib import Path
+import shutil, sys
+print('Free goinfre space: %.1f GiB' % (shutil.disk_usage(Path(sys.argv[1])).free / 1024**3))
+ANDROID_SPACE
+  if ! "$ANDROID_HOME/platform-tools/adb" -P 5038 -s "emulator-$ANDROID_DEVICE_PORT" get-state >/dev/null 2>&1; then
+    printf 'Device is not running. Start it with desk %s, then repeat this check.\n' "$component"
+    return "$result"
+  fi
+  android_device_running || return $?
+  python3 - "$ANDROID_HOME/platform-tools/adb" "emulator-$ANDROID_DEVICE_PORT" <<'ANDROID_GAMES'
+import subprocess, sys
+adb, serial = sys.argv[1:]
+def shell(*arguments):
+    try:
+        result = subprocess.run([adb, '-P', '5038', '-s', serial, 'shell', *arguments],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+    return result.stdout.strip() if result.returncode == 0 else ''
+for label, key in [('Android', 'ro.build.version.release'), ('API level', 'ro.build.version.sdk'),
+                   ('Supported app ABIs', 'ro.product.cpu.abilist'), ('ARM native bridge', 'ro.dalvik.vm.native.bridge'),
+                   ('Graphics implementation', 'ro.hardware.egl')]:
+    print(label + ': ' + (shell('getprop', key) or 'not reported'))
+for package, label in [('com.android.vending', 'Google Play Store'), ('com.google.android.gms', 'Google Play services')]:
+    print(label + ': ' + ('installed' if shell('pm', 'path', package).startswith('package:') else 'not available or device still booting'))
+features = shell('pm', 'list', 'features')
+print('Vulkan features: ' + (', '.join(line for line in features.splitlines() if 'vulkan' in line.lower()) or 'not reported'))
+print('ARM-only games require a matching ABI/native bridge; game and anti-cheat compatibility varies.')
+ANDROID_GAMES
+  return "$result"
+)
+
+
 launch_android_unlocked() (
-  if ! android_ready; then
+  local component=$1
+  shift
+  android_profile "$component" || return $?
+  android_runtime_settings "$component" || return $?
+  if [ "${1:-}" = --doctor ] || [ "${1:-}" = doctor ]; then
+    [ "$#" = 1 ] || { fail "Use: desk $component --doctor"; return 2; }
+    android_doctor "$component"
+    return $?
+  fi
+  if ! android_ready "$component"; then
     if [ "${PREPARE_ON_LAUNCH:-1}" != 1 ]; then
-      fail "Android is not installed. Use 'desk install android'."
+      fail "Android is not installed. Use 'desk install $component'."
       return 1
     fi
-    prepare_android_unlocked || return 1
+    prepare_android_unlocked "$component" || return 1
   fi
   android_environment || return 1
-  if ! "$ANDROID_HOME/emulator/emulator" -accel-check > "$ANDROID_BASE/logs/acceleration-desk.log" 2>&1; then
-    cat "$ANDROID_BASE/logs/acceleration-desk.log" >&2
+  if ! "$ANDROID_HOME/emulator/emulator" -accel-check > "$ANDROID_BASE/logs/acceleration-$ANDROID_DEVICE_LOG_TAG.log" 2>&1; then
+    cat "$ANDROID_BASE/logs/acceleration-$ANDROID_DEVICE_LOG_TAG.log" >&2
     fail 'Android needs KVM hardware acceleration. Ask school IT for access to /dev/kvm.'
     return 1
   fi
-  if "$ANDROID_HOME/platform-tools/adb" -P 5038 -s emulator-5584 get-state >/dev/null 2>&1; then
-    info 'Android 11 Google Play is already running.'
+  local running_status
+  if android_device_running; then
+    info "$(label "$component") is already running."
     return 0
+  else
+    running_status=$?
+    [ "$running_status" != 2 ] || return 1
   fi
-  info "Opening Android 11 Google Play (log: $(pretty "$ANDROID_BASE/logs/launch-desk.log"))"
-  start_detached_process "$BIN_DIR/desk" _android-run "$@" \
-    </dev/null > "$ANDROID_BASE/logs/launch-desk.log" 2>&1 &
+  info "Opening $(label "$component") (log: $(pretty "$ANDROID_BASE/logs/launch-$ANDROID_DEVICE_LOG_TAG.log"))"
+  start_logged_desktop "$(label "$component")" "$ANDROID_BASE/logs/launch-$ANDROID_DEVICE_LOG_TAG.log" \
+    "$BIN_DIR/desk" "$ANDROID_DEVICE_RUN_COMMAND" "$@"
 )
 
 
 run_android() (
-  android_ready || { fail "Run 'desk install android' first."; return 1; }
+  local component=$1
+  shift
+  android_profile "$component" || return $?
+  android_runtime_settings "$component" || return $?
+  android_ready "$component" || { fail "Run 'desk install $component' first."; return 1; }
   android_environment || return 1
   local adb="$ANDROID_HOME/platform-tools/adb"
   (
     for ((attempt=0; attempt<120; attempt++)); do
-      booted=$("$adb" -P 5038 -s emulator-5584 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r') || true
+      booted=$("$adb" -P 5038 -s "emulator-$ANDROID_DEVICE_PORT" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r') || true
       if [ "$booted" = 1 ]; then
         for setting in window_animation_scale transition_animation_scale animator_duration_scale; do
-          "$adb" -P 5038 -s emulator-5584 shell settings put global "$setting" 0
+          "$adb" -P 5038 -s "emulator-$ANDROID_DEVICE_PORT" shell settings put global "$setting" 0
         done
         exit 0
       fi
       sleep 2
     done
-  ) > "$ANDROID_BASE/logs/boot-settings-desk.log" 2>&1 &
+  ) > "$ANDROID_BASE/logs/boot-settings-$ANDROID_DEVICE_LOG_TAG.log" 2>&1 &
   local settings_pid=$!
   trap 'kill "$settings_pid" 2>/dev/null || true' EXIT
-  "$ANDROID_HOME/emulator/emulator" -avd Android_11_Play_Pixel9 \
-    -port 5584 -accel on -cores 2 -memory 2048 \
-    -gpu "${DESK_ANDROID_GPU:-${ANDROID_LIGHT_GPU:-auto}}" -feature -Vulkan \
-    -no-snapshot -no-boot-anim -no-audio -no-metrics \
+  local -a device_flags=()
+  if [ "$component" = android ]; then
+    device_flags=(-feature -Vulkan -no-audio)
+  fi
+  "$ANDROID_HOME/emulator/emulator" -avd "$ANDROID_DEVICE_NAME" \
+    -port "$ANDROID_DEVICE_PORT" -accel on -cores "$ANDROID_DEVICE_CORES" -memory "$ANDROID_DEVICE_MEMORY" \
+    -gpu "$ANDROID_DEVICE_GPU" "${device_flags[@]}" \
+    -no-snapshot -no-boot-anim -no-metrics \
     -camera-back none -camera-front none -netspeed full -netdelay none "$@"
 )
 
@@ -5249,14 +5419,15 @@ prepare_claude() {
 
 
 prepare_android_unlocked() {
-  install_android || return 1
-  android_ready || return 1
-  write_wrapper android android
+  local component=${1:-android}
+  install_android "$component" || return 1
+  android_ready "$component" || return 1
+  write_wrapper "$component" "$component"
 }
 
 
 prepare_android() {
-  with_lock_wait android prepare_android_unlocked
+  with_lock_wait android prepare_android_unlocked "${1:-android}"
 }
 
 
@@ -5311,7 +5482,7 @@ prepare_all() {
       brave) prepare_brave || failed=1 ;;
       codex) prepare_codex || failed=1 ;;
       claude) prepare_claude || failed=1 ;;
-      android) prepare_android || failed=1 ;;
+      android|android-tablet) prepare_android "$program" || failed=1 ;;
       flutter) prepare_flutter || failed=1 ;;
       hermes) prepare_hermes || failed=1 ;;
       cua) with_lock_wait cua prepare_cua_unlocked || failed=1 ;;
@@ -5333,7 +5504,7 @@ program_executable() {
     code) printf '%s/vscode/bin/code\n' "$APPS" ;;
     brave) printf '%s/brave/brave\n' "$APPS" ;;
     codex|claude) native_cli_path "$1" ;;
-    android) printf '%s/android/sdk/emulator/emulator\n' "$APPS" ;;
+    android|android-tablet) printf '%s/android/sdk/emulator/emulator\n' "$APPS" ;;
     flutter) printf '%s/flutter/sdk/bin/flutter\n' "$APPS" ;;
     hermes) printf '%s/hermes/current/source/.hermes/bin/hermes\n' "$APPS" ;;
     cua) printf '%s/cua/current/cua-driver\n' "$APPS" ;;
@@ -5346,7 +5517,7 @@ program_executable() {
 
 program_installed() {
   local executable
-  if [ "$1" = android ]; then android_ready; return $?; fi
+  if [ "$1" = android ] || [ "$1" = android-tablet ]; then android_ready "$1"; return $?; fi
   if [ "$1" = flutter ]; then flutter_ready; return $?; fi
   if [ "$1" = hermes ]; then hermes_ready; return $?; fi
   if [ "$1" = cua ]; then cua_ready; return $?; fi
@@ -5362,7 +5533,7 @@ program_ready() {
     code) vscode_ready ;;
     brave) brave_ready ;;
     codex|claude) native_cli_ready "$1" ;;
-    android) android_ready ;;
+    android|android-tablet) android_ready "$1" ;;
     flutter) flutter_ready ;;
     hermes) hermes_ready ;;
     cua) cua_ready ;;
@@ -5412,7 +5583,7 @@ update_installed_programs() {
       brave) with_lock_wait brave install_brave || failed=1 ;;
       codex) with_lock_wait codex install_codex || failed=1 ;;
       claude) with_lock_wait claude install_claude || failed=1 ;;
-      android) with_lock_wait android install_android || failed=1 ;;
+      android|android-tablet) with_lock_wait android install_android "$program" || failed=1 ;;
       flutter) with_lock_wait flutter install_flutter || failed=1 ;;
       hermes) with_lock_wait hermes install_hermes || failed=1 ;;
       cua) with_lock_wait cua prepare_cua_unlocked || failed=1 ;;
@@ -5568,9 +5739,9 @@ open_app() {
       launch_claude "$@"
       ;;
 
-    android)
+    android|android-tablet)
       with_lock_wait core install_self || return 1
-      with_lock_wait android launch_android_unlocked "$@"
+      with_lock_wait android launch_android_unlocked "$name" "$@"
       ;;
 
     flutter|dart)
@@ -5734,7 +5905,7 @@ open_programs() {
   # Start desktop apps first, before a single AI tool takes over this terminal.
   for program in "${PROGRAMS[@]}"; do
     case "$program" in
-      code|brave|android|codex-desktop|claude-desktop|hermes-desktop|openmausbot|chatgpt) open_app "$program" || failed=1 ;;
+      code|brave|android|android-tablet|codex-desktop|claude-desktop|hermes-desktop|openmausbot|chatgpt) open_app "$program" || failed=1 ;;
     esac
   done
   [ "$failed" = 0 ] || return "$failed"
@@ -5824,10 +5995,10 @@ shell_prepare_component() {
       fi
       ;;
 
-    android)
+    android|android-tablet)
       # Keep routine shell startup offline and fast once Android is ready.
-      if android_ready; then return 0; fi
-      if with_lock_try android prepare_android_unlocked; then
+      if android_ready "$name"; then return 0; fi
+      if with_lock_try android prepare_android_unlocked "$name"; then
         rc=0
       else
         rc=$?
@@ -6128,6 +6299,7 @@ clean_reset_unlocked() {
   if managed_wrapper "$BIN_DIR/android"; then
     rm -f "$BIN_DIR/android"
   fi
+  if managed_wrapper "$BIN_DIR/android-tablet"; then rm -f "$BIN_DIR/android-tablet"; fi
 
   if managed_wrapper "$BIN_DIR/flutter"; then rm -f "$BIN_DIR/flutter"; fi
   if managed_wrapper "$BIN_DIR/dart"; then rm -f "$BIN_DIR/dart"; fi
@@ -6145,6 +6317,7 @@ clean_reset_unlocked() {
     "$DATA_DIR/applications/code-native.desktop" \
     "$DATA_DIR/applications/brave-native.desktop" \
     "$DATA_DIR/applications/android-desk.desktop"
+  rm -f "$DATA_DIR/applications/android-tablet-desk.desktop"
 
   rm -f \
     "$INITIALIZED" \
@@ -6343,6 +6516,7 @@ show_status() {
       codex) executable="$APPS/codex/bin/codex"; version="$APPS/codex/.installed-version" ;;
       claude) executable="$APPS/claude/claude"; version="$APPS/claude/.installed-version" ;;
       android) executable="$APPS/android/sdk/emulator/emulator"; version="$APPS/android/.installed-version" ;;
+      android-tablet) executable="$APPS/android/sdk/emulator/emulator"; version="$APPS/android/.installed-version-tablet" ;;
       flutter) executable="$APPS/flutter/sdk/bin/flutter"; version="$APPS/flutter/.installed-version" ;;
       hermes) executable="$APPS/hermes/current/source/.hermes/bin/hermes"; version="$APPS/hermes/.installed-version" ;;
       cua) executable="$APPS/cua/current/cua-driver"; version="$APPS/cua/.installed-version" ;;
@@ -6354,7 +6528,7 @@ show_status() {
       case "$program" in
         code) vscode_ready || state='needs import' ;;
         brave) brave_ready || state='needs import' ;;
-        android) android_ready || state='needs setup' ;;
+        android|android-tablet) android_ready "$program" || state='needs setup' ;;
         flutter) flutter_ready || state='needs setup' ;;
         hermes) hermes_ready || state='needs setup' ;;
         cua) cua_ready || state='needs setup' ;;
@@ -6549,6 +6723,10 @@ main() {
       open_app android "$@"
       ;;
 
+    android-tablet|tablet|emulator-tablet)
+      open_app android-tablet "$@"
+      ;;
+
     flutter|dart)
       with_lock_wait core install_self || return 1
       open_app "$cmd" "$@"
@@ -6560,7 +6738,11 @@ main() {
       ;;
 
     _android-run)
-      run_android "$@"
+      run_android android "$@"
+      ;;
+
+    _android-tablet-run)
+      run_android android-tablet "$@"
       ;;
 
     c|code|vscode)

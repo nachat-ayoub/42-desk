@@ -7,10 +7,10 @@
 
 It installs your choice of **VS Code, Brave, Codex CLI, Claude Code, Android 11 Google Play,
 Flutter, Hermes Desktop, Hermes Agent (CLI), ChatGPT Desktop (official), Codex Desktop,
-Claude Desktop, OpenMausBot, and Cua Driver** inside
+Claude Desktop, OpenMausBot, Cua Driver, and an Android gaming tablet** inside
 `goinfre`. It migrates existing editor/browser profiles, creates familiar
 `code`, `brave`, `codex`, `claude`, `android`, `flutter`, `dart`, `hermes`,
-`hermes-desktop`, `chatgpt`, `codex-desktop`, `claude-desktop`, `openmausbot`, and `cua-driver` commands for the selected programs.
+`hermes-desktop`, `chatgpt`, `codex-desktop`, `claude-desktop`, `openmausbot`, `cua-driver`, and `android-tablet` commands for the selected programs.
 Choose what to open with `desk`, and update installed programs with `desk update`.
 Shell startup also checks your saved installation selection for updates.
 
@@ -28,6 +28,7 @@ Shell startup also checks your saved installation selection for updates.
 - OpenMausBot desktop from its official Linux AppImage, with Codex/Claude command discovery
 - Hermes Agent from official source releases, with its pinned runtime and caches in `goinfre`
 - Android 11 with Google Play Store and a 1080×2424 Pixel 9 display profile
+- Separate Android 11 gaming tablet with Google Play, a 1640×2360 iPad-like display, audio and game graphics
 - Stable Flutter SDK with bundled Dart and Pub/Gradle caches in `goinfre`
 - Optional Flutter build setup for Android, web, and Linux desktop
 - Separate checkbox pickers for installation and launching
@@ -88,7 +89,7 @@ From this checkout on the new machine, run:
 ./desk install all
 ```
 
-This installs all thirteen programs without opening them, saves your selection, and refreshes
+This installs all fourteen programs without opening them, saves your selection, and refreshes
 the managed `desk` command. Then run `desk` to choose what to open, or `desk android`
 to start Android. Repeating setup reuses completed Android downloads and existing
 device data. Network access is needed for missing packages, and Linux KVM access is
@@ -119,7 +120,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.16.0) and `desk st`.
+the installed command. Verify with `desk --version` (2.17.0) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -147,6 +148,7 @@ Choose your programs
    [ ] OpenMausBot
    [ ] ChatGPT Desktop (official, includes Codex)
    [ ] Cua Driver (Codex computer use)
+   [ ] Android 11 Google Play Tablet (iPad-like display, games)
 
 Up/Down or j/k: move   Space: toggle
 Enter: install   a: all   n: none   Esc/q: cancel
@@ -296,6 +298,89 @@ To stop this device with its private ADB server:
 If `GOINFRE` is not exported in your terminal, replace `$GOINFRE` with the storage
 path printed by `desk st`. Port 5584 is reserved for this device; its ADB server
 uses port 5038. Setup does not install Java, Android Studio, or system packages.
+
+### Android 11 Google Play tablet for games
+
+Choose **Android 11 Google Play Tablet** in the checkbox picker, or run:
+
+```bash
+desk install android-tablet       # Aliases: tablet, emulator-tablet
+desk android-tablet               # Also available as android-tablet
+desk android-tablet --doctor      # Host checks; guest/game capabilities once booted
+desk open android android-tablet  # Open phone and tablet together
+```
+
+The tablet uses an **iPad Air-like 1640×2360 portrait display at 320 dpi**,
+which gives Android an 820×1180 dp layout. Use the emulator's rotate buttons for
+landscape games. Defaults are **2 CPU cores, 2 GB RAM, a 512 MB app heap and a
+16 GB data partition**. The phone keeps its existing display and settings.
+
+| Profile | Screen | Data partition | ADB device |
+| --- | --- | --- | --- |
+| `android` | 1080×2424 | 6 GB | `emulator-5584` |
+| `android-tablet` | 1640×2360 | 16 GB | `emulator-5586` |
+
+Both use Android 11 / API 30 with Google's official **Google Play Store and
+Google Play services** image. Its supported ABIs include x86/x86-64 and Google's
+ARM 32-bit/64-bit binary translation. The image enables dynamic GLES and Vulkan;
+tablet launch allows Vulkan where supported, uses automatic GPU selection, and
+keeps speaker audio enabled. Touch/multitouch, mouse/keyboard input and virtual
+motion sensors are available. Microphone and camera input remain disabled.
+Keyboard behavior and controller support depend on the game.
+
+After the tablet finishes booting, sign in to the Play Store and install your
+games there. Install the Google Play Games app from the Store if a game asks for
+it. Initial Google service updates can take time. Apps, game downloads, account
+state and progress are stored in the tablet's own AVD directory.
+
+The two devices **share one SDK and system image**, so adding the tablet to a
+ready phone installation needs no second image download and does not change the
+phone's configuration or game data. Their AVDs, userdata, emulator ports and
+launch logs are separate. All state, downloads and caches remain under
+`$GOINFRE/apps/android`; the tablet lives at
+`avd/Android_11_Play_Tablet.avd`, and its log is `logs/launch-tablet.log`.
+Both connect through the existing private ADB server on **5038**. SDK/image
+updates wait until all emulators are closed, and preserve both devices' data.
+
+On a workstation with enough spare RAM, allocate more resources per launch:
+
+```bash
+DESK_ANDROID_TABLET_MEMORY=4096 DESK_ANDROID_TABLET_CORES=4 desk android-tablet
+DESK_ANDROID_TABLET_GPU=host desk android-tablet
+```
+
+Memory accepts **2048–8192 MB** and CPU cores **1–8**. GPU mode defaults to
+`auto`; a tablet-specific override takes precedence over `DESK_ANDROID_GPU`.
+For graphics startup problems, try
+`DESK_ANDROID_TABLET_GPU=swiftshader desk android-tablet` (software rendering is
+slower). Overrides apply to that launch and preserve saved AVD configuration.
+On an 8 GB workstation, start with the 2 GB default and one emulator at a time.
+Leave enough goinfre space for game downloads and updates; the virtual data
+partition can grow as games are installed.
+
+Usable KVM acceleration and working graphics drivers are needed for practical
+gameplay. `desk android-tablet --doctor` checks acceleration and free space;
+when the tablet is running it also reports Android/API version, supported ABIs,
+the ARM bridge, Play Store/services and advertised Vulkan features. It does not
+install games, log in, or change game progress. Early emulator startup failures
+are reported with the launch log.
+
+ARM translation does not guarantee that every game works. Games requiring a
+newer Android version, unsupported graphics features, or physical-device
+integrity/anti-cheat checks can remain unavailable. No game-specific compatibility
+patches are applied.
+
+For Flutter tablet testing after your Android toolchain is prepared:
+
+```bash
+desk flutter devices
+desk flutter run -d emulator-5586
+desk update android-tablet
+```
+
+Deselecting the tablet leaves it intact. `desk clean` removes the phone/tablet
+wrappers and desktop entries while keeping the shared SDK, both AVDs, Google
+accounts and game progress. Back up important data because goinfre can be cleared.
 
 ### VS Code
 
@@ -993,7 +1078,8 @@ desk codex-desktop   open the community Linux Codex desktop app
 desk codex-desktop --doctor diagnose desktop/database startup
 desk codex-desktop --repair-runtime fix incompatible native SQLite
 desk claude-desktop  open the community Linux Claude desktop app
-desk android [ARGS]  open the managed Android emulator
+desk android [ARGS]  open the managed Android phone emulator
+desk android-tablet [ARGS]  open the Android gaming tablet
 desk flutter [ARGS]  run Flutter (includes Dart)
 desk flutter-setup [TARGETS] prepare Android/web/Linux build tools
 desk env flutter     print shell exports for project scripts
@@ -1261,6 +1347,7 @@ Wrappers:
 ~/.local/bin/codex
 ~/.local/bin/claude
 ~/.local/bin/android
+~/.local/bin/android-tablet
 ~/.local/bin/flutter
 ~/.local/bin/dart
 ```
@@ -1526,6 +1613,7 @@ No root access is required.
 CLI regression checks (no desktop session, network, or application download required).
 They cover installation and launch checkboxes, terminal restoration, separate
 saved preferences, installed-only updates, Flutter SDK checksum/revision validation and Android ADB routing,
+separate phone/tablet AVDs and ports, game graphics/audio, tablet diagnostics,
 Flutter target setup, interactive Android licences, portable JDK/Ninja integrity, and browser selection,
 current/newer version handling,
 installation integrity, cache routing, terminal argument/input/exit handling,
