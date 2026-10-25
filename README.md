@@ -120,7 +120,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.17.0) and `desk st`.
+the installed command. Verify with `desk --version` (2.17.1) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -931,6 +931,43 @@ without opening the app. Launch output is saved to
 failed downloads keep the working release, and running instances postpone updates.
 `desk clean` removes the managed app, wrappers, menu entry, and caches while
 preserving bot data and desktop settings.
+
+#### Shared-home startup leases
+
+On school machines, `~/.openmausbot` may follow you through a shared home folder.
+If a previous machine leaves a server lease behind, OpenMausBot can report
+**"a delegated server on another machine"** and refuse startup. Its lease
+protocol protects the shared database; a foreign hostname does not establish
+whether that other process has exited, and these records have no remote expiry.
+
+Inspect the parent and delegated-child leases without opening the app or
+printing account data:
+
+```bash
+git pull && ./desk openmausbot --doctor
+```
+
+**Fully quit OpenMausBot on every computer sharing this folder first**, including
+error dialogs, tray icons and background servers. Once it is closed everywhere:
+
+```bash
+./desk openmausbot --repair-lease --closed-everywhere
+desk openmausbot
+```
+
+The flag explicitly asserts that every instance is closed; desk cannot verify
+remote processes. Recovery refuses known live local owners, running managed
+instances, linked lease paths and unrecognized lease formats. It archives the
+recognized parent and child lease files into private `.desk-lease-backup-*`
+directories beside them, prints their locations, and preserves bot configuration,
+chats, databases, WAL/SHM files and other runtime files. It stops if a checked
+lease changes. Recovery refreshes the installed desk command but does not open
+OpenMausBot or change its upstream ownership checks.
+
+These commands use `OMB_DATA_DIR` when set, otherwise `~/.openmausbot`. If a named
+environment's error points to another data folder, set `OMB_DATA_DIR` to that
+folder for the diagnostic/recovery command. Close the app fully before switching
+workstations, and use only one running instance for a shared data directory.
 
 ### Hermes Desktop (official)
 

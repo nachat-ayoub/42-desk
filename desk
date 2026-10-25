@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.17.0"
+VERSION="2.17.1"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -234,6 +234,7 @@ usage() {
   printf '  desk hermes [ARGS]   run Hermes Agent in this terminal\n'
   printf '  desk hermes-desktop open the official Hermes Desktop app\n'
   printf '  desk openmausbot     open OpenMausBot desktop\n'
+  printf '  desk openmausbot --doctor  inspect data-directory leases\n'
   printf '  desk chatgpt         open official ChatGPT Desktop (includes Codex)\n'
   printf '  desk codex-desktop   open the community Linux Codex desktop app\n'
   printf '  desk codex-desktop --doctor  diagnose desktop/database startup\n'
@@ -4542,9 +4543,165 @@ CHATGPT_DOCTOR
 }
 
 
+# Foreign-host leases protect a shared database; recovery requires the operator
+# to close OpenMausBot on every machine. Never infer remote liveness from a PID.
+openmausbot_lease_tools() {
+  local action=$1
+  if [ "$action" = repair ] && ai_desktop_running openmausbot; then
+    fail 'Quit OpenMausBot, including its error dialog/tray and background server, before recovering its leases.'
+    return 1
+  fi
+  python3 - "$action" "${OMB_DATA_DIR:-$HOME/.openmausbot}" <<'OMB_LEASE'
+import json
+import math
+import os
+from pathlib import Path
+import re
+import socket
+import stat
+import sys
+import tempfile
+
+mode, directory = sys.argv[1:]
+root = Path(directory).resolve()
+paths = [root / 'openmausbot-server.lease',
+         root / '.openmausbot-server-child/openmausbot-server.lease']
+boot_file = Path('/proc/sys/kernel/random/boot_id')
+boot = boot_file.read_text().strip() if boot_file.is_file() else None
+host = socket.gethostname()
+uuid = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}')
+
+
+def fingerprint(info):
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def read_record(path):
+    if path.parent.is_symlink():
+        raise RuntimeError('Refusing a symlinked lease directory: ' + str(path.parent))
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(descriptor, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > 16384:
+            raise RuntimeError('Lease must be a small regular file owned by you: ' + str(path))
+        contents = stream.read(16385)
+        if len(contents) > 16384 or fingerprint(os.fstat(stream.fileno())) != fingerprint(info):
+            raise RuntimeError('Lease changed while being read: ' + str(path))
+    record = json.loads(contents)
+    if not (isinstance(record, dict) and type(record.get('version')) is int and record['version'] == 1
+            and type(record.get('pid')) is int and 0 < record['pid'] <= 0x7fffffff
+            and isinstance(record.get('host'), str) and 0 < len(record['host']) <= 255
+            and not any(character in record['host'] for character in '\r\n\0')
+            and isinstance(record.get('token'), str) and uuid.fullmatch(record['token'])
+            and type(record.get('createdAt')) in (int, float)
+            and math.isfinite(record['createdAt']) and record['createdAt'] > 0):
+        raise RuntimeError('Unrecognized lease format; preserved for manual inspection: ' + str(path))
+    if 'boot' in record and record['boot'] is not None and not (
+            isinstance(record['boot'], str) and 0 < len(record['boot']) <= 128
+            and re.fullmatch(r'[0-9A-Za-z:_.-]+', record['boot'])):
+        raise RuntimeError('Unrecognized boot identity in ' + str(path))
+    if 'uptime' in record and not (type(record['uptime']) is int and record['uptime'] >= 0):
+        raise RuntimeError('Unrecognized uptime in ' + str(path))
+    return record, contents, fingerprint(info)
+
+
+def owner_state(record):
+    same_machine = record['host'] == host or (boot is not None and record.get('boot') == boot)
+    if not same_machine:
+        return 'other machine; remote liveness cannot be checked here', False
+    if boot is not None and isinstance(record.get('boot'), str) and record['boot'] != boot:
+        return 'previous boot on this machine', False
+    # Match upstream's reboot fallback for older records without a boot ID.
+    if record.get('boot') is None and 'uptime' in record:
+        try:
+            uptime = float(Path('/proc/uptime').read_text().split()[0]) * 1000
+            if uptime < record['uptime']:
+                return 'previous boot (recorded uptime exceeds current uptime)', False
+        except (OSError, ValueError):
+            pass
+    try:
+        os.kill(record['pid'], 0)
+        return 'local PID is still alive; close it first', True
+    except ProcessLookupError:
+        return 'local PID has exited', False
+    except PermissionError:
+        return 'local PID exists but cannot be inspected; preserved', True
+
+
+try:
+    print('OpenMausBot data-directory lease ' + ('diagnostics' if mode == 'doctor' else 'recovery'))
+    print('Data directory: ' + str(root))
+    print('Current machine: ' + host)
+    pending = []
+    for path in paths:
+        snapshot = read_record(path)
+        if snapshot is None:
+            print(str(path) + ': no lease')
+            continue
+        record, _, _ = snapshot
+        status, alive = owner_state(record)
+        print(f'{path}: host={json.dumps(record["host"])}, PID={record["pid"]}; {status}')
+        pending.append((path, snapshot, alive))
+    if mode == 'doctor':
+        print('Lease tokens, credentials, databases and conversations were not printed or modified.')
+        if pending:
+            print('Fully quit OpenMausBot on EVERY computer sharing this folder before recovery.')
+            print('Then use: desk openmausbot --repair-lease --closed-everywhere')
+        sys.exit(0)
+    if any(alive for _, _, alive in pending):
+        raise RuntimeError('A local lease owner is still alive. No lease was archived.')
+    # Validate every snapshot again before any mutation. A changed/new owner
+    # means the operator must close the app and retry, never overwrite it.
+    for path, expected, _ in pending:
+        if read_record(path) != expected:
+            raise RuntimeError('A lease changed during recovery; no lease was archived. Close all instances and retry.')
+    for path, expected, _ in pending:
+        if read_record(path) != expected:
+            raise RuntimeError('A lease changed; recovery stopped without overwriting the changed owner.')
+        backup = Path(tempfile.mkdtemp(prefix='.desk-lease-backup-', dir=path.parent))
+        destination = backup / path.name
+        path.rename(destination)
+        moved = read_record(destination)
+        if moved is None or moved[:2] != expected[:2] or moved[2][:4] != expected[2][:4]:
+            # A concurrent app replaced the pathname just before rename.
+            # Restore it without overwriting any newer lease at that name.
+            try:
+                os.link(destination, path, follow_symlinks=False)
+            except FileExistsError:
+                pass
+            else:
+                destination.unlink()
+            raise RuntimeError('A lease changed while being archived. Recovery stopped; its replacement was preserved. Keep every instance closed and inspect the lease again.')
+        print('Archived lease: ' + str(destination), flush=True)
+    print('Recovery complete. Chats, databases, settings and other files were preserved.')
+    print('Start OpenMausBot with: desk openmausbot')
+except (OSError, ValueError, RuntimeError, OverflowError) as error:
+    sys.exit('OpenMausBot lease check failed: ' + str(error))
+OMB_LEASE
+}
+
+
 launch_ai_desktop_unlocked() (
   local app=$1
   shift
+  if [ "$app" = openmausbot ] && [ "${1:-}" = --doctor ]; then
+    [ "$#" = 1 ] || { fail 'Use: desk openmausbot --doctor'; return 2; }
+    openmausbot_lease_tools doctor
+    return $?
+  fi
+  if [ "$app" = openmausbot ] && [ "${1:-}" = --repair-lease ]; then
+    if [ "$#" != 2 ] || [ "$2" != --closed-everywhere ]; then
+      fail 'Recovery requires OpenMausBot to be fully closed on EVERY computer sharing its folder.'
+      fail 'After closing it everywhere, use: desk openmausbot --repair-lease --closed-everywhere'
+      return 2
+    fi
+    with_lock_wait core install_self || return 1
+    openmausbot_lease_tools repair
+    return $?
+  fi
   if [ "$app" = codex-desktop ] && [ "${1:-}" = --doctor ]; then
     if [ "$#" != 1 ]; then fail 'Use desk codex-desktop --doctor without other arguments.'; return 2; fi
     codex_desktop_doctor
