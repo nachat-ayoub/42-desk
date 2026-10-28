@@ -521,7 +521,7 @@ normalize_programs all
 printf '%s\\n' "${PROGRAMS[@]}" > "$DESK_FIXTURE/all-programs"
 ''')
         self.assertEqual((self.root / "prepared").read_text(), "claude\n")
-        self.assertEqual((self.root / "all-programs").read_text(), "code\nbrave\ncodex\nclaude\nandroid\nflutter\nhermes\ncodex-desktop\nclaude-desktop\nhermes-desktop\nopenmausbot\nchatgpt\ncua\nandroid-tablet\n")
+        self.assertEqual((self.root / "all-programs").read_text(), "code\nbrave\ncodex\nclaude\nandroid\nflutter\nhermes\ncodex-desktop\nclaude-desktop\nhermes-desktop\nopenmausbot\nchatgpt\ncua\nandroid-tablet\nt3code\n")
 
     def test_clean_preserves_claude_account_data_and_cleans_its_cache(self):
         self.run_desk("install", "claude")

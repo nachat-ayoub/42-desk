@@ -76,21 +76,29 @@ pathlib.Path(args[args.index('-o') + 1]).write_bytes(pathlib.Path(source).read_b
         self.make_release('claude-desktop', 'v3.3.11+claude2.42304.0')
         self.make_release('openmausbot', 'v0.1.116')
 
-    def make_release(self, app, tag, missing_digest=False, bad_host=False, fail_extract=False):
+    def make_release(self, app, tag, missing_digest=False, bad_host=False, fail_extract=False, fail_runtime=False, incomplete=False):
         repo = self.repos[app]
         name = {'codex-desktop': 'codex-desktop-linux-x86_64.AppImage',
                 'claude-desktop': 'claude-desktop-unofficial-2.42304.0-3.3.11-amd64.AppImage',
-                'openmausbot': 'OpenMausBot-' + tag.lstrip('v') + '-x86_64.AppImage'}[app]
+                'openmausbot': 'OpenMausBot-' + tag.lstrip('v') + '-x86_64.AppImage',
+                't3code': 'T3-Code-' + tag.lstrip('v') + '-x86_64.AppImage'}[app]
         artifact = self.root / (app + '-' + tag + '.AppImage')
         launcher = '''#!/usr/bin/env python3
 import json, os, pathlib, sys
 root = pathlib.Path(os.environ['DESK_FIXTURE'])
+if os.environ.get('ELECTRON_RUN_AS_NODE') == '1':
+    if FAIL_RUNTIME:
+        sys.exit('GLIBC_2.38 not found (fixture)')
+    print('desk-t3-runtime-ok' if 'desk-t3-runtime-ok' in sys.argv[-1] else '{"electron":"44.9.3","sqlite":{"quick_check":"ok"}}')
+    sys.exit(0)
 (root / 'APP-launch.json').write_text(json.dumps({
     'args': sys.argv[1:], 'env': {name: os.environ.get(name) for name in (
         'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'TMPDIR', 'MESA_SHADER_CACHE_DIR', 'APPDIR', 'CLAUDE_FORCE_SANDBOX',
-        'PATH', 'OMB_DATA_DIR', 'LD_LIBRARY_PATH', 'CODEX_CLI_PATH')}
+        'PATH', 'OMB_DATA_DIR', 'LD_LIBRARY_PATH', 'CODEX_CLI_PATH', 'T3CODE_HOME',
+        'T3CODE_DISABLE_AUTO_UPDATE', 'T3CODE_DESKTOP_LAUNCHER_PATH', 'NODE_COMPILE_CACHE', 'npm_config_cache',
+        'CODEX_HOME', 'CLAUDE_CONFIG_DIR')}
 }))
-'''.replace('APP-launch.json', app + '-launch.json')
+'''.replace('APP-launch.json', app + '-launch.json').replace('FAIL_RUNTIME', repr(fail_runtime))
         script = '''#!/bin/sh
 [ "$1" = --appimage-extract ] || exit 2
 python3 - <<'PY'
@@ -112,6 +120,14 @@ if APP_NAME == 'openmausbot':
     (root / 'resources').mkdir()
     (root / 'resources/app.asar').write_text('packaged app')
     target.write_text("""#!/bin/sh\nexec "$(dirname "$0")/openmausbot" --no-sandbox "$@"\n""")
+if APP_NAME == 't3code':
+    native = root / 't3code'
+    native.write_text(LAUNCHER)
+    native.chmod(0o755)
+    if not INCOMPLETE:
+        (root / 'resources').mkdir()
+        (root / 'resources/app.asar').write_text('packaged app')
+    target.write_text('#!/bin/sh\\nexit 99\\n')
 if APP_NAME == 'codex-desktop':
     binary = root / 'codex-desktop.bin'
     binary.write_text('#!/bin/sh\\necho ' + repr('{"ok":true,"abi":"143","arch":"x64"}') + '\\n')
@@ -123,7 +139,7 @@ if APP_NAME == 'codex-desktop':
     renderer.parent.mkdir(parents=True)
     renderer.write_text(CHAT_SOURCE)
 PY
-'''.replace('LAUNCHER', repr(launcher)).replace('APP_NAME', repr(app)).replace('CHAT_SOURCE', repr(CHAT_RENDERER))
+'''.replace('LAUNCHER', repr(launcher)).replace('APP_NAME', repr(app)).replace('CHAT_SOURCE', repr(CHAT_RENDERER)).replace('INCOMPLETE', repr(incomplete))
         if fail_extract:
             script = '#!/bin/sh\nexit 1\n'
         artifact.write_text(script)

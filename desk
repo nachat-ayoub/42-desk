@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2.17.1"
+VERSION="2.18.0"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 # -------------------------------------------------------------------
@@ -42,7 +42,7 @@ PROGRAMS_FILE="$STATE_DIR/programs"
 OPEN_PROGRAMS_FILE="$STATE_DIR/open-programs"
 # Existing installations keep their original two-program selection.
 PROGRAMS=(code brave)
-ALL_PROGRAMS=(code brave codex claude android flutter hermes codex-desktop claude-desktop hermes-desktop openmausbot chatgpt cua android-tablet)
+ALL_PROGRAMS=(code brave codex claude android flutter hermes codex-desktop claude-desktop hermes-desktop openmausbot chatgpt cua android-tablet t3code)
 PICKER_PROGRAMS=("${ALL_PROGRAMS[@]}")
 
 AUTO_CHECK_SECONDS=$((12 * 60 * 60))
@@ -195,6 +195,7 @@ label() {
     hermes-desktop) echo "Hermes Desktop" ;;
     openmausbot) echo "OpenMausBot" ;;
     chatgpt) echo "ChatGPT Desktop (official)" ;;
+    t3code) echo "T3 Code" ;;
     codex-desktop) echo "Codex Desktop (community)" ;;
     claude-desktop) echo "Claude Desktop (community)" ;;
     *) echo "$1" ;;
@@ -236,6 +237,7 @@ usage() {
   printf '  desk openmausbot     open OpenMausBot desktop\n'
   printf '  desk openmausbot --doctor  inspect data-directory leases\n'
   printf '  desk chatgpt         open official ChatGPT Desktop (includes Codex)\n'
+  printf '  desk t3code          open T3 Code desktop (t3code --doctor for checks)\n'
   printf '  desk codex-desktop   open the community Linux Codex desktop app\n'
   printf '  desk codex-desktop --doctor  diagnose desktop/database startup\n'
   printf '  desk codex-desktop --repair-runtime  fix incompatible native SQLite\n'
@@ -298,6 +300,7 @@ normalize_programs() {
         hermes-agent) word=hermes ;;
         cua-driver) word=cua ;;
         chatgpt-desktop) word=chatgpt ;;
+        t3-code) word=t3code ;;
         all) requested+=("${ALL_PROGRAMS[@]}"); continue ;;
         none) none=1 ;;
       esac
@@ -394,7 +397,7 @@ title, action = sys.argv[1:3]
 separator = sys.argv.index("--", 3)
 labels = {"code": "VS Code", "brave": "Brave", "codex": "Codex CLI", "claude": "Claude Code", "android": "Android 11 Google Play", "flutter": "Flutter SDK", "hermes": "Hermes Agent (CLI)", "hermes-desktop": "Hermes Desktop (official)",
           "codex-desktop": "Codex Desktop (community Linux port)", "claude-desktop": "Claude Desktop (community Linux port)", "openmausbot": "OpenMausBot", "chatgpt": "ChatGPT Desktop (official, includes Codex)", "cua": "Cua Driver (Codex computer use)",
-          "android-tablet": "Android 11 Google Play Tablet (iPad-like display, games)",
+          "android-tablet": "Android 11 Google Play Tablet (iPad-like display, games)", "t3code": "T3 Code (official desktop)",
           "android-toolchain": "Android app builds", "web-toolchain": "Web (Brave / Chrome)", "linux-toolchain": "Linux desktop"}
 programs = [(name, labels[name]) for name in sys.argv[3:separator]]
 chosen = set(sys.argv[separator + 1:]).intersection(name for name, _ in programs)
@@ -543,6 +546,7 @@ show_next_steps() {
   selected openmausbot && printf '  OpenMausBot     openmausbot  (choose a logged-in agent in Settings → Engines)\n'
   selected codex-desktop && printf '  Codex Desktop   codex-desktop\n'
   selected chatgpt && printf '  ChatGPT Desktop chatgpt\n'
+  selected t3code && printf '  T3 Code         t3code  (use your signed-in Codex or Claude CLI)\n'
   selected claude-desktop && printf '  Claude Desktop  claude-desktop\n'
   printf '\nOpen programs: desk   |   Update installed programs: desk update\n'
   printf '\nChange programs anytime: desk install\n'
@@ -785,7 +789,8 @@ def report():
                  Path(os.environ.get('CODEX_HOME') or home / '.codex'),
                  Path(os.environ.get('CLAUDE_CONFIG_DIR') or home / '.claude'),
                  Path(os.environ.get('CUA_DRIVER_RS_HOME') or os.environ.get('CUA_DRIVER_HOME') or home / '.cua-driver'),
-                 Path(os.environ.get('HERMES_HOME') or home / '.hermes')):
+                 Path(os.environ.get('HERMES_HOME') or home / '.hermes'),
+                 Path(os.environ.get('T3CODE_HOME') or home / '.t3'), config / 't3code-v2'):
         row('Persistent profile/data', path)
     print('Rows can overlap; do not add them together. No file contents were read.')
     print('Move supported caches/extensions: desk storage migrate (quit affected apps first).')
@@ -2019,7 +2024,7 @@ write_launchers() {
   if selected cua; then write_wrapper cua-driver cua || return 1; fi
   if selected hermes-desktop; then write_hermes_desktop_launcher || return 1; fi
   local desktop_app
-  for desktop_app in codex-desktop claude-desktop openmausbot chatgpt; do
+  for desktop_app in codex-desktop claude-desktop openmausbot chatgpt t3code; do
     if selected "$desktop_app"; then write_ai_desktop_launcher "$desktop_app" || return 1; fi
   done
   if selected android; then write_wrapper android android || return 1; fi
@@ -3357,6 +3362,9 @@ ai_desktop_ready() {
   if [ "$1" = openmausbot ]; then
     [ -x "$APPS/$1/current/openmausbot" ] && [ -f "$APPS/$1/current/resources/app.asar" ] || return 1
   fi
+  if [ "$1" = t3code ]; then
+    [ -x "$APPS/$1/current/t3code" ] && [ -f "$APPS/$1/current/resources/app.asar" ] || return 1
+  fi
 }
 
 
@@ -3385,6 +3393,7 @@ write_ai_desktop_launcher() {
   local comment='Community Linux desktop package managed by 42-desk'
   if [ "$app" = openmausbot ]; then comment='OpenMausBot desktop chat and agents managed by 42-desk'; fi
   if [ "$app" = chatgpt ]; then comment='Official ChatGPT Desktop and Codex by OpenAI'; fi
+  if [ "$app" = t3code ]; then comment='Official T3 Code desktop for your coding agents'; fi
   write_wrapper "$app" "$app" || return 1
   mkdir -p "$DATA_DIR/applications" || return 1
   cat > "$DATA_DIR/applications/$app-desk.desktop" <<EOF
@@ -3397,6 +3406,9 @@ Icon=applications-development
 Categories=Development;
 Terminal=false
 EOF
+  if [ "$app" = t3code ]; then
+    printf 'StartupWMClass=t3code\nMimeType=x-scheme-handler/t3code;x-scheme-handler/t3code-dev;\n' >> "$DATA_DIR/applications/$app-desk.desktop"
+  fi
 }
 
 
@@ -3434,7 +3446,7 @@ import tempfile
 from urllib.parse import quote, unquote, urlparse
 
 base, app, update = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3] == '1'
-repo = {'codex-desktop': 'cuongducle/codex-linux',
+repo = {'codex-desktop': 'cuongducle/codex-linux', 't3code': 'pingdotgg/t3code',
         'claude-desktop': 'aaddrick/claude-desktop-debian',
         'openmausbot': 'milind-soni/OpenMausBot'}[app]
 root_url = 'https://github.com/' + repo
@@ -3516,6 +3528,7 @@ def main():
         'codex-desktop': r'codex-desktop-linux-' + re.escape(arch) + r'\.AppImage',
         'claude-desktop': r'claude-desktop-unofficial-[0-9][A-Za-z0-9.+_-]*-' + re.escape(arch) + r'\.AppImage',
         'openmausbot': r'OpenMausBot-' + re.escape(tag.lstrip('v')) + r'-x86_64\.AppImage',
+        't3code': r'T3-Code-' + re.escape(tag.lstrip('v')) + '-' + re.escape(arch) + r'\.AppImage',
     }
     pattern = patterns[app]
     choices = [asset for asset in parser.assets
@@ -3557,6 +3570,20 @@ def main():
             if app == 'openmausbot' and (not os.access(content / 'openmausbot', os.X_OK) or
                                          not (content / 'resources/app.asar').is_file()):
                 raise RuntimeError('OpenMausBot AppImage is missing its native app or resources')
+            if app == 't3code':
+                binary = content / 't3code'
+                if not os.access(binary, os.X_OK) or not (content / 'resources/app.asar').is_file():
+                    raise RuntimeError('T3 Code AppImage is missing its native app or resources')
+                # Test Electron and SQLite without a display or user databases.
+                result = subprocess.run([str(binary), '-e',
+                    'const db=new(require("node:sqlite").DatabaseSync)(":memory:");'
+                    'if(db.prepare("SELECT 42 AS value").get().value!==42)process.exit(1);'
+                    'db.close();console.log("desk-t3-runtime-ok");'],
+                    env=dict(os.environ, ELECTRON_RUN_AS_NODE='1', TMPDIR=str(stage)),
+                    capture_output=True, text=True, timeout=30)
+                if result.returncode or result.stdout.strip() != 'desk-t3-runtime-ok':
+                    raise RuntimeError('T3 Code runtime/SQLite is incompatible with this system: ' +
+                                       (result.stderr or result.stdout).strip()[:1800])
             if app == 'claude-desktop':
                 # This is an extracted directory, not a FUSE mount. The
                 # community launcher's AppImage mode disables the sandbox
@@ -4306,7 +4333,99 @@ prepare_ai_desktop_unlocked() {
   install_ai_desktop "$1" || return 1
   ai_desktop_ready "$1" || return 1
   if [ "$1" = codex-desktop ] || [ "$1" = chatgpt ]; then prepare_codex_desktop_storage || return 1; fi
+  if [ "$1" = t3code ]; then prepare_t3code_storage || return 1; fi
   write_ai_desktop_launcher "$1"
+}
+
+
+# New T3 profiles live in goinfre. Existing installations and custom links keep
+# their databases in place; never copy a potentially active SQLite database.
+prepare_t3code_storage() {
+  local running=0
+  if ai_desktop_running t3code; then running=1; fi
+  python3 - "$HOME" "$CONF_DIR" "$GOINFRE/data/t3code" "$running" <<'T3_STORAGE'
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+home, config, root = map(Path, sys.argv[1:4])
+running = sys.argv[4] == '1'
+root = root.resolve()
+pairs = [(config / 't3code-v2', root / 'config/t3code-v2')]
+if not os.environ.get('T3CODE_HOME', '').strip():
+    pairs.append((home / '.t3', root / 'home'))
+try:
+    pending = []
+    for source, target in pairs:
+        if source.is_symlink():
+            if source.is_dir():
+                continue
+            if source.resolve() != target or target.exists() or target.is_symlink():
+                raise RuntimeError(f'Broken custom T3 Code link: {source}. Restore its target first.')
+            pending.append((source, target, True))
+        elif source.exists():
+            if not source.is_dir():
+                raise RuntimeError(f'T3 Code profile is not a directory: {source}')
+            print(f'Keeping existing T3 Code data in place: {source}', file=sys.stderr)
+        else:
+            if target.is_symlink() or (target.exists() and not target.is_dir()):
+                raise RuntimeError(f'Invalid managed T3 Code directory: {target}')
+            pending.append((source, target, False))
+    if pending:
+        processes = subprocess.check_output(['ps', '-u', str(os.getuid()), '-o', 'comm='], text=True)
+        if running or any(name.strip().lower().startswith(('t3code', 't3')) for name in processes.splitlines()):
+            raise RuntimeError('Close T3 Code and its background server before preparing storage.')
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        root.chmod(0o700)
+        for source, target, repair in pending:
+            source.parent.mkdir(parents=True, exist_ok=True)
+            target.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if repair:
+                print(f'Recreated missing desk-managed T3 Code directory: {target}. Restore a backup if previous contents are needed.', file=sys.stderr)
+            else:
+                source.symlink_to(target, target_is_directory=True)
+except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+    sys.exit('T3 Code storage setup failed: ' + str(error))
+T3_STORAGE
+}
+
+
+t3code_doctor() {
+  PATH="$BIN_DIR:$PATH" python3 - "$APPS/t3code" "$CONF_DIR/t3code-v2" "$GOINFRE/cache/t3code" <<'T3_DOCTOR'
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+base, profile, cache = map(Path, sys.argv[1:])
+print('T3 Code desktop diagnostics', flush=True)
+try:
+    receipt = base / '.desk-release.json'
+    print('Installed version:', json.loads(receipt.read_text())['tag'] if receipt.is_file() else 'not installed')
+    print('Release source: https://github.com/pingdotgg/t3code')
+    print('Data:', Path(os.environ.get('T3CODE_HOME') or Path.home() / '.t3').resolve())
+    print('Electron profile:', profile.resolve())
+    print('Managed cache:', cache)
+    for name in ('codex', 'claude'):
+        print(name + ':', shutil.which(name) or 'not found; install with desk install ' + name)
+    binary = base / 'current/t3code'
+    if not binary.is_file():
+        sys.exit('T3 Code is not installed. Use desk install t3code.')
+    result = subprocess.run([str(binary), '-e',
+        'const db=new(require("node:sqlite").DatabaseSync)(":memory:");'
+        'console.log(JSON.stringify({electron:process.versions.electron,sqlite:db.prepare("PRAGMA quick_check").get()}));db.close();'],
+        env=dict(os.environ, ELECTRON_RUN_AS_NODE='1'), capture_output=True, text=True, timeout=30)
+    if result.returncode:
+        sys.exit('Runtime check failed: ' + (result.stderr or result.stdout).strip()[:1800])
+    print('Runtime/SQLite (in memory):', result.stdout.strip())
+    print('Authenticate a provider with codex login or claude auth login, then select it in T3 Code.')
+    print('Update with: desk update t3code. No existing databases or settings were opened.')
+except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+    sys.exit('T3 Code diagnostics failed: ' + str(error))
+T3_DOCTOR
 }
 
 
@@ -4687,6 +4806,21 @@ OMB_LEASE
 launch_ai_desktop_unlocked() (
   local app=$1
   shift
+  if [ "$app" = t3code ]; then
+    case "${1:-}" in
+      --doctor)
+        [ "$#" = 1 ] || { fail 'Use: desk t3code --doctor'; return 2; }
+        t3code_doctor
+        return $?
+        ;;
+      --version)
+        [ "$#" = 1 ] || { fail 'Use: desk t3code --version'; return 2; }
+        if [ ! -f "$APPS/t3code/.installed-version" ]; then fail 'Use desk install t3code first.'; return 1; fi
+        cat "$APPS/t3code/.installed-version"
+        return $?
+        ;;
+    esac
+  fi
   if [ "$app" = openmausbot ] && [ "${1:-}" = --doctor ]; then
     [ "$#" = 1 ] || { fail 'Use: desk openmausbot --doctor'; return 2; }
     openmausbot_lease_tools doctor
@@ -4738,6 +4872,7 @@ launch_ai_desktop_unlocked() (
     prepare_codex_desktop_storage || return 1
   fi
   if [ "$app" = chatgpt ]; then prepare_codex_desktop_storage || return 1; fi
+  if [ "$app" = t3code ]; then prepare_t3code_storage || return 1; fi
   if [ "$app" = chatgpt ] || [ "$app" = codex-desktop ]; then
     with_lock_wait storage storage_paths prepare codex || return 1
   fi
@@ -4758,6 +4893,16 @@ launch_ai_desktop_unlocked() (
   export MESA_SHADER_CACHE_DIR="$cache/mesa" __GL_SHADER_DISK_CACHE_PATH="$cache/nvidia"
   mkdir -p "$cache" "$XDG_CACHE_HOME" "$TMPDIR" "$MESA_SHADER_CACHE_DIR" "$__GL_SHADER_DISK_CACHE_PATH" || return 1
   chmod 700 "$cache" || return 1
+  if [ "$app" = t3code ]; then
+    executable="$APPDIR/t3code"
+    export PATH="$BIN_DIR:$PATH"
+    export T3CODE_DISABLE_AUTO_UPDATE=true T3CODE_DESKTOP_LAUNCHER_PATH="$BIN_DIR/t3code"
+    export npm_config_cache="$cache/npm" NODE_COMPILE_CACHE="$cache/node-compile"
+    mkdir -p "$npm_config_cache" "$NODE_COMPILE_CACHE" || return 1
+    if ! command -v codex >/dev/null 2>&1 && ! command -v claude >/dev/null 2>&1; then
+      warn 'T3 Code needs a signed-in coding agent. Install one with desk install codex or desk install claude, then sign in.'
+    fi
+  fi
   if [ "$app" = openmausbot ]; then
     # Its AppRun automatically adds --no-sandbox on restricted hosts. Launch
     # the extracted native app with its bundled libraries and keep the sandbox.
@@ -5644,7 +5789,7 @@ prepare_all() {
       hermes) prepare_hermes || failed=1 ;;
       cua) with_lock_wait cua prepare_cua_unlocked || failed=1 ;;
       hermes-desktop) with_lock_wait hermes prepare_hermes_desktop_unlocked || failed=1 ;;
-      codex-desktop|claude-desktop|openmausbot|chatgpt) with_lock_wait "$program" prepare_ai_desktop_unlocked "$program" || failed=1 ;;
+      codex-desktop|claude-desktop|openmausbot|chatgpt|t3code) with_lock_wait "$program" prepare_ai_desktop_unlocked "$program" || failed=1 ;;
     esac
   done
 
@@ -5666,7 +5811,7 @@ program_executable() {
     hermes) printf '%s/hermes/current/source/.hermes/bin/hermes\n' "$APPS" ;;
     cua) printf '%s/cua/current/cua-driver\n' "$APPS" ;;
     hermes-desktop) printf '%s/hermes/current/desktop\n' "$APPS" ;;
-    codex-desktop|claude-desktop|openmausbot|chatgpt) printf '%s/%s/current/AppRun\n' "$APPS" "$1" ;;
+    codex-desktop|claude-desktop|openmausbot|chatgpt|t3code) printf '%s/%s/current/AppRun\n' "$APPS" "$1" ;;
     *) return 2 ;;
   esac
 }
@@ -5679,7 +5824,7 @@ program_installed() {
   if [ "$1" = hermes ]; then hermes_ready; return $?; fi
   if [ "$1" = cua ]; then cua_ready; return $?; fi
   if [ "$1" = hermes-desktop ]; then hermes_desktop_ready; return $?; fi
-  case "$1" in codex-desktop|claude-desktop|openmausbot|chatgpt) ai_desktop_ready "$1"; return $? ;; esac
+  case "$1" in codex-desktop|claude-desktop|openmausbot|chatgpt|t3code) ai_desktop_ready "$1"; return $? ;; esac
   executable=$(program_executable "$1") || return $?
   [ -x "$executable" ]
 }
@@ -5695,7 +5840,7 @@ program_ready() {
     hermes) hermes_ready ;;
     cua) cua_ready ;;
     hermes-desktop) hermes_desktop_ready ;;
-    codex-desktop|claude-desktop|openmausbot|chatgpt) ai_desktop_ready "$1" ;;
+    codex-desktop|claude-desktop|openmausbot|chatgpt|t3code) ai_desktop_ready "$1" ;;
     *) return 2 ;;
   esac
 }
@@ -5745,7 +5890,7 @@ update_installed_programs() {
       hermes) with_lock_wait hermes install_hermes || failed=1 ;;
       cua) with_lock_wait cua prepare_cua_unlocked || failed=1 ;;
       hermes-desktop) with_lock_wait hermes install_hermes hermes-desktop || failed=1 ;;
-      codex-desktop|claude-desktop|openmausbot|chatgpt) with_lock_wait "$program" install_ai_desktop "$program" || failed=1 ;;
+      codex-desktop|claude-desktop|openmausbot|chatgpt|t3code) with_lock_wait "$program" install_ai_desktop "$program" || failed=1 ;;
     esac
   done
   if [ "$failed" = 0 ]; then
@@ -5922,7 +6067,7 @@ open_app() {
       with_lock_wait codex-desktop with_lock_wait chatgpt launch_ai_desktop_unlocked chatgpt "$@"
       ;;
 
-    codex-desktop|claude-desktop|openmausbot)
+    codex-desktop|claude-desktop|openmausbot|t3code)
       with_lock_wait "$name" launch_ai_desktop_unlocked "$name" "$@"
       ;;
 
@@ -6062,7 +6207,7 @@ open_programs() {
   # Start desktop apps first, before a single AI tool takes over this terminal.
   for program in "${PROGRAMS[@]}"; do
     case "$program" in
-      code|brave|android|android-tablet|codex-desktop|claude-desktop|hermes-desktop|openmausbot|chatgpt) open_app "$program" || failed=1 ;;
+      code|brave|android|android-tablet|codex-desktop|claude-desktop|hermes-desktop|openmausbot|chatgpt|t3code) open_app "$program" || failed=1 ;;
     esac
   done
   [ "$failed" = 0 ] || return "$failed"
@@ -6183,7 +6328,7 @@ shell_prepare_component() {
       if with_lock_try hermes prepare_hermes_desktop_unlocked; then rc=0; else rc=$?; fi
       ;;
 
-    codex-desktop|claude-desktop|openmausbot|chatgpt)
+    codex-desktop|claude-desktop|openmausbot|chatgpt|t3code)
       if ai_desktop_ready "$name"; then return 0; fi
       if with_lock_try "$name" prepare_ai_desktop_unlocked "$name"; then rc=0; else rc=$?; fi
       ;;
@@ -6351,7 +6496,7 @@ native_apps_running() {
   fi
 
   local desktop_app
-  for desktop_app in codex-desktop claude-desktop openmausbot chatgpt; do
+  for desktop_app in codex-desktop claude-desktop openmausbot chatgpt t3code; do
     if ai_desktop_running "$desktop_app"; then
       warn "$(label "$desktop_app") is running. Close it first."
       running=1
@@ -6428,10 +6573,12 @@ clean_reset_unlocked() {
     "$APPS/claude-desktop" \
     "$APPS/openmausbot" \
     "$APPS/chatgpt" \
+    "$APPS/t3code" \
     "$GOINFRE/cache/codex-desktop" \
     "$GOINFRE/cache/claude-desktop" \
     "$GOINFRE/cache/openmausbot" \
     "$GOINFRE/cache/chatgpt" \
+    "$GOINFRE/cache/t3code" \
     "$GOINFRE/cache/vscode-vsix"
 
   rm -rf "$APPS/flutter/sdk"
@@ -6465,7 +6612,7 @@ clean_reset_unlocked() {
   if managed_wrapper "$BIN_DIR/hermes-desktop"; then rm -f "$BIN_DIR/hermes-desktop"; fi
   rm -f "$DATA_DIR/applications/hermes-desktop-desk.desktop"
   local desktop_app
-  for desktop_app in codex-desktop claude-desktop openmausbot chatgpt; do
+  for desktop_app in codex-desktop claude-desktop openmausbot chatgpt t3code; do
     if managed_wrapper "$BIN_DIR/$desktop_app"; then rm -f "$BIN_DIR/$desktop_app"; fi
     rm -f "$DATA_DIR/applications/$desktop_app-desk.desktop"
   done
@@ -6614,7 +6761,7 @@ clean_reset() {
     if lock_try_acquire hermes; then held_hermes=1; else rc=1; fi
   fi
 
-  for extra_lock in codex-desktop claude-desktop openmausbot chatgpt storage cua cua-config; do
+  for extra_lock in codex-desktop claude-desktop openmausbot chatgpt t3code storage cua cua-config; do
     [ "$rc" = 0 ] || break
     if lock_try_acquire "$extra_lock"; then extra_locks+=("$extra_lock"); else rc=1; fi
   done
@@ -6678,7 +6825,7 @@ show_status() {
       hermes) executable="$APPS/hermes/current/source/.hermes/bin/hermes"; version="$APPS/hermes/.installed-version" ;;
       cua) executable="$APPS/cua/current/cua-driver"; version="$APPS/cua/.installed-version" ;;
       hermes-desktop) executable="$APPS/hermes/current/desktop"; version="$APPS/hermes/.installed-version" ;;
-      codex-desktop|claude-desktop|openmausbot|chatgpt) executable="$APPS/$program/current/AppRun"; version="$APPS/$program/.installed-version" ;;
+      codex-desktop|claude-desktop|openmausbot|chatgpt|t3code) executable="$APPS/$program/current/AppRun"; version="$APPS/$program/.installed-version" ;;
     esac
     if [ -x "$executable" ]; then
       state=installed
@@ -6690,7 +6837,7 @@ show_status() {
         hermes) hermes_ready || state='needs setup' ;;
         cua) cua_ready || state='needs setup' ;;
         hermes-desktop) hermes_desktop_ready || state='needs setup' ;;
-        codex-desktop|claude-desktop|openmausbot|chatgpt) ai_desktop_ready "$program" || state='needs setup' ;;
+        codex-desktop|claude-desktop|openmausbot|chatgpt|t3code) ai_desktop_ready "$program" || state='needs setup' ;;
       esac
     fi
     version=$(cat "$version" 2>/dev/null || printf '%s' '-')
@@ -6868,12 +7015,16 @@ main() {
       open_app hermes-desktop "$@"
       ;;
 
-    codex-desktop|claude-desktop|openmausbot|chatgpt)
+    codex-desktop|claude-desktop|openmausbot|chatgpt|t3code)
       open_app "$cmd" "$@"
       ;;
 
     chatgpt-desktop)
       open_app chatgpt "$@"
+      ;;
+
+    t3-code)
+      open_app t3code "$@"
       ;;
 
     android|emulator)

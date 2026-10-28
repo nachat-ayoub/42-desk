@@ -7,10 +7,10 @@
 
 It installs your choice of **VS Code, Brave, Codex CLI, Claude Code, Android 11 Google Play,
 Flutter, Hermes Desktop, Hermes Agent (CLI), ChatGPT Desktop (official), Codex Desktop,
-Claude Desktop, OpenMausBot, Cua Driver, and an Android gaming tablet** inside
+Claude Desktop, OpenMausBot, Cua Driver, an Android gaming tablet, and T3 Code** inside
 `goinfre`. It migrates existing editor/browser profiles, creates familiar
 `code`, `brave`, `codex`, `claude`, `android`, `flutter`, `dart`, `hermes`,
-`hermes-desktop`, `chatgpt`, `codex-desktop`, `claude-desktop`, `openmausbot`, `cua-driver`, and `android-tablet` commands for the selected programs.
+`hermes-desktop`, `chatgpt`, `codex-desktop`, `claude-desktop`, `openmausbot`, `cua-driver`, `android-tablet`, and `t3code` commands for the selected programs.
 Choose what to open with `desk`, and update installed programs with `desk update`.
 Shell startup also checks your saved installation selection for updates.
 
@@ -26,6 +26,7 @@ Shell startup also checks your saved installation selection for updates.
 - Separate Codex Desktop and Claude Desktop entries using community Linux packages
 - Official Nous Research Hermes Desktop, built for Linux with its managed agent backend
 - OpenMausBot desktop from its official Linux AppImage, with Codex/Claude command discovery
+- Official T3 Code desktop AppImage, with Codex/Claude discovery and new profiles in `goinfre`
 - Hermes Agent from official source releases, with its pinned runtime and caches in `goinfre`
 - Android 11 with Google Play Store and a 1080×2424 Pixel 9 display profile
 - Separate Android 11 gaming tablet with Google Play, a 1640×2360 iPad-like display, audio and game graphics
@@ -120,7 +121,7 @@ git pull
 
 This runs the updated local script, opens the checkbox picker, and refreshes
 `~/.local/bin/desk` after you confirm. Pulling Git changes alone does not replace
-the installed command. Verify with `desk --version` (2.17.1) and `desk st`.
+the installed command. Verify with `desk --version` (2.18.0) and `desk st`.
 Setup does not open applications. Run `desk` afterward to choose what to launch.
 
 ## First setup
@@ -149,6 +150,7 @@ Choose your programs
    [ ] ChatGPT Desktop (official, includes Codex)
    [ ] Cua Driver (Codex computer use)
    [ ] Android 11 Google Play Tablet (iPad-like display, games)
+   [ ] T3 Code (official desktop)
 
 Up/Down or j/k: move   Space: toggle
 Enter: install   a: all   n: none   Esc/q: cancel
@@ -969,6 +971,67 @@ environment's error points to another data folder, set `OMB_DATA_DIR` to that
 folder for the diagnostic/recovery command. Close the app fully before switching
 workstations, and use only one running instance for a shared data directory.
 
+### T3 Code (official desktop)
+
+```bash
+git pull
+./desk install t3code         # Or check T3 Code in ./desk install
+desk t3code                  # Also available as t3code or desk t3-code
+desk t3code --doctor         # Runtime, storage paths, and agent command discovery
+desk update t3code           # Close T3 Code first; does not open it afterward
+```
+
+Desk installs the official desktop app from
+[pingdotgg/t3code](https://github.com/pingdotgg/t3code/releases), for Linux
+x86-64 or ARM64. It selects the stable release's exact version/architecture
+AppImage, checks its GitHub SHA-256 digest before extraction, and tests its
+bundled Electron runtime and an in-memory SQLite database before activation.
+It needs neither sudo, FUSE, nor a separate Node/npm installation. Failed
+downloads or incompatible packages leave the previous release selected.
+The inspected v0.1.3 x64 package's main executable and terminal module require
+glibc 2.25 and 2.34 respectively. Its optional screenshot/accessibility module
+requires glibc 2.39, so those features may be unavailable on Ubuntu 22.04 even
+when the core runtime check passes. Desk does not replace your system glibc.
+
+T3 Code controls agent CLIs on your machine. Select **Codex CLI** or **Claude Code**
+alongside T3 Code in the install checklist if you need one, then authenticate:
+
+```bash
+codex login
+# Or, for Claude Code:
+claude auth login
+```
+
+Open T3 Code and select your signed-in provider. Its managed launcher makes
+`~/.local/bin` available to the app, including application-menu launches, and
+preserves your provider configuration and credentials. Selecting T3 Code alone
+does not install additional agent CLIs or sign you in. The `t3code` desktop
+command is separate from upstream's `t3` web/server CLI; desk does not install
+a background service or expose a server to your network.
+
+New installations use:
+
+```text
+$GOINFRE/apps/t3code/releases/<version>  extracted, verified releases
+$GOINFRE/apps/t3code/current             selected release
+$GOINFRE/cache/t3code                    Chromium, shader, npm, Node and temp caches
+$GOINFRE/data/t3code/home                new ~/.t3 data, reached through a symlink
+$GOINFRE/data/t3code/config/t3code-v2     new Electron profile, also symlinked
+```
+
+Existing `~/.t3` and Electron profile directories stay in place, with a notice;
+desk does not move or copy their databases while another T3 server could be
+using them. Custom profile links and an explicit `T3CODE_HOME` are respected.
+Use `desk storage` to check physical paths. If a desk-managed target is missing,
+desk recreates its empty directory and reports that a backup is needed to
+recover any previous contents; broken custom links require manual correction.
+
+The app's built-in updater is disabled for managed launches; use
+`desk update t3code` so downloads and updates stay managed by desk. Chat data,
+profiles and custom links survive `desk clean`. Back up important data because
+campus goinfre can be cleared. `--doctor` checks the runtime using an in-memory
+database and reports paths without opening your conversations or settings.
+
 ### Hermes Desktop (official)
 
 ```bash
@@ -1111,6 +1174,7 @@ desk claude [ARGS]   run Claude Code in this terminal
 desk hermes [ARGS]   run Hermes Agent in this terminal
 desk hermes-desktop open the official Hermes Desktop app
 desk openmausbot     open OpenMausBot desktop
+desk t3code          open official T3 Code desktop
 desk codex-desktop   open the community Linux Codex desktop app
 desk codex-desktop --doctor diagnose desktop/database startup
 desk codex-desktop --repair-runtime fix incompatible native SQLite
@@ -1362,6 +1426,7 @@ Applications normally live in:
 /goinfre/$USER/apps/claude
 /goinfre/$USER/apps/android
 /goinfre/$USER/apps/flutter
+/goinfre/$USER/apps/t3code
 ```
 
 If `/goinfre` is unavailable, `desk` falls back to:
@@ -1387,6 +1452,7 @@ Wrappers:
 ~/.local/bin/android-tablet
 ~/.local/bin/flutter
 ~/.local/bin/dart
+~/.local/bin/t3code
 ```
 
 ### Codex cache and persistent data
